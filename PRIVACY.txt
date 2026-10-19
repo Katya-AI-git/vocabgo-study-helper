@@ -1,0 +1,15 @@
+Privacy and data handling
+=========================
+
+This project is designed to run locally.
+
+- User tokens and model API keys are stored in the local config.json file.
+- Question-bank data is stored in %LOCALAPPDATA%\VocabgoAuto\bank.json.
+- User-imported materials are stored in
+  %LOCALAPPDATA%\VocabgoAuto\materials.
+- This repository's source code does not contain telemetry or a remote
+  account database.
+- Model calls are sent only to the API endpoint configured by the user.
+- Do not publish config.json, bank.json, materials.json, logs containing
+  credentials, or screenshots containing personal information.
+

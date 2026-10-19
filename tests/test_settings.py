@@ -1,0 +1,648 @@
+# -*- coding: utf-8 -*-
+"""配置 / 路径 / LLM 层的单元测试（不联网，全部用假响应验证）。"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from vocabgo.llm import PROVIDER_PRESETS, LlmHelper, guess_models, preset_choices  # noqa: E402
+from vocabgo.paths import app_dir, bank_path, config_path, data_dir, is_frozen  # noqa: E402
+from vocabgo.settings import (  # noqa: E402
+    DEFAULT_SETTINGS,
+    RECOMMENDED_NOTES,
+    apply_recommended,
+    load_settings,
+    missing_auth_fields,
+    recommended_lines,
+    resolve_llm,
+    save_settings,
+    token_saved_at_from_disk,
+)
+
+
+class FakeResponse:
+    def __init__(self, status_code: int, payload: dict) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = json.dumps(payload, ensure_ascii=False)
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class SettingsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp()) / "config.json"
+        self.addCleanup(lambda: self.tmp.exists() and self.tmp.unlink())
+
+    def test_defaults_when_file_missing(self) -> None:
+        config = load_settings(self.tmp)
+        self.assertEqual(config["llm"]["provider"], "deepseek")
+        self.assertTrue(config["runtime"]["probe"])
+        self.assertEqual(config["study"]["course_id"], "CET4_v2")
+
+    def test_partial_file_deep_merges(self) -> None:
+        self.tmp.write_text(json.dumps({"auth": {"usertoken": "tok"}, "runtime": {"probe": False}}), encoding="utf-8")
+        config = load_settings(self.tmp)
+        self.assertEqual(config["auth"]["usertoken"], "tok")
+        self.assertFalse(config["runtime"]["probe"])
+        # 没写的字段仍然有默认值
+        self.assertEqual(config["runtime"]["max_score"], 10)
+        self.assertEqual(config["auth"]["abc"], "")
+
+    def test_broken_file_falls_back_to_defaults(self) -> None:
+        self.tmp.write_text("{ this is not json", encoding="utf-8")
+        config = load_settings(self.tmp)
+        self.assertEqual(config["llm"]["provider"], "deepseek")
+
+    def test_env_override_wins(self) -> None:
+        self.tmp.write_text(json.dumps({"auth": {"usertoken": "from_file"}}), encoding="utf-8")
+        with patch.dict("os.environ", {"VOCABGO_TOKEN": "from_env"}, clear=False):
+            config = load_settings(self.tmp)
+        self.assertEqual(config["auth"]["usertoken"], "from_env")
+
+    def test_save_load_round_trip(self) -> None:
+        config = load_settings(self.tmp)
+        config["auth"]["usertoken"] = "abc123"
+        config["llm"]["key"] = "sk-test"
+        save_settings(config, self.tmp)
+        again = load_settings(self.tmp)
+        self.assertEqual(again["auth"]["usertoken"], "abc123")
+        self.assertEqual(again["llm"]["key"], "sk-test")
+        # 落盘内容不含内部键
+        raw = json.loads(self.tmp.read_text(encoding="utf-8"))
+        self.assertNotIn("_path", raw)
+
+    def test_runtime_defaults_and_persistence(self) -> None:
+        """界面上的轮数/任务类型/读图开关/上次任务都要能存住，下次打开直接带出来。"""
+        config = load_settings(self.tmp)
+        self.assertEqual(config["runtime"]["loop"], 3)
+        self.assertEqual(config["runtime"]["class_loop"], 3)
+        self.assertEqual(config["runtime"]["kind"], "class")
+        self.assertTrue(config["runtime"]["ocr"])
+        self.assertTrue(config["runtime"]["adaptive_thinking"])
+        self.assertEqual(config["runtime"]["last_task_id"], "")
+
+        config["runtime"]["loop"] = 5
+        config["runtime"]["class_loop"] = 4
+        config["runtime"]["kind"] = "study"
+        config["runtime"]["ocr"] = False
+        config["runtime"]["adaptive_thinking"] = False
+        config["runtime"]["last_task_id"] = "95201087"
+        save_settings(config, self.tmp)
+
+        again = load_settings(self.tmp)
+        self.assertEqual(again["runtime"]["loop"], 5)
+        self.assertEqual(again["runtime"]["class_loop"], 4)
+        self.assertEqual(again["runtime"]["kind"], "study")
+        self.assertFalse(again["runtime"]["ocr"])
+        self.assertFalse(again["runtime"]["adaptive_thinking"])
+        self.assertEqual(again["runtime"]["last_task_id"], "95201087")
+
+    def test_missing_auth_fields(self) -> None:
+        config = load_settings(self.tmp)
+        self.assertEqual(missing_auth_fields(config), ["usertoken"])
+        config["auth"]["usertoken"] = "x"
+        self.assertEqual(missing_auth_fields(config), [])
+
+
+class TokenSavedAtTest(unittest.TestCase):
+    """踩过的坑：登录写好了「令牌获取时间」，界面一改参数触发自动保存，时间戳被内存里的旧值抹掉，
+    6 小时提醒从此不响 —— 用户就只能撞上 11003「需安全验证」。"""
+
+    def setUp(self) -> None:
+        self.folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.folder, ignore_errors=True)
+        self.tmp = Path(self.folder) / "config.json"
+
+    def test_stale_memory_copy_does_not_erase_disk_stamp(self) -> None:
+        # 模拟：登录流程已经把时间戳写盘
+        on_disk = load_settings(self.tmp)
+        on_disk["runtime"]["token_saved_at"] = "2026-10-16T09:34:16"
+        save_settings(on_disk, self.tmp)
+
+        # 模拟：GUI 手上那份是启动时载入的旧副本（空串），用户改了参数把它整体写回
+        stale = load_settings(self.tmp)
+        self.assertEqual(stale["runtime"]["token_saved_at"], "2026-10-16T09:34:16")
+        stale["runtime"]["token_saved_at"] = ""
+        stale["runtime"]["loop"] = 5
+        save_settings(stale, self.tmp)
+
+        again = load_settings(self.tmp)
+        self.assertEqual(again["runtime"]["token_saved_at"], "2026-10-16T09:34:16", "磁盘上的新时间戳不能被旧副本抹掉")
+        self.assertEqual(again["runtime"]["loop"], 5, "其它字段该照常保存")
+
+    def test_newer_in_memory_stamp_wins(self) -> None:
+        old = load_settings(self.tmp)
+        old["runtime"]["token_saved_at"] = "2026-10-16T09:34:16"
+        save_settings(old, self.tmp)
+
+        fresh = load_settings(self.tmp)
+        fresh["runtime"]["token_saved_at"] = "2026-10-16T13:00:00"
+        save_settings(fresh, self.tmp)
+        self.assertEqual(load_settings(self.tmp)["runtime"]["token_saved_at"], "2026-10-16T13:00:00")
+
+    def test_reader_handles_missing_and_broken_file(self) -> None:
+        self.assertEqual(token_saved_at_from_disk(self.tmp), "")
+        self.tmp.write_text("{ not json", encoding="utf-8")
+        self.assertEqual(token_saved_at_from_disk(self.tmp), "")
+
+    def test_reader_reports_disk_value(self) -> None:
+        config = load_settings(self.tmp)
+        config["runtime"]["token_saved_at"] = "2026-10-16T09:34:16"
+        save_settings(config, self.tmp)
+        self.assertEqual(token_saved_at_from_disk(self.tmp), "2026-10-16T09:34:16")
+
+
+class ResolveLlmTest(unittest.TestCase):
+    def test_deepseek_preset_fills_url_and_models(self) -> None:
+        resolved = resolve_llm({"llm": {"provider": "deepseek", "key": "sk-x"}})
+        self.assertEqual(resolved["url"], "https://api.deepseek.com")
+        self.assertEqual(resolved["model"], "deepseek-flash")
+        self.assertEqual(resolved["vision_model"], "deepseek-flash")
+        self.assertEqual(resolved["thinking"], "off")
+        self.assertEqual(resolved["key"], "sk-x")
+
+    def test_explicit_values_beat_preset(self) -> None:
+        resolved = resolve_llm(
+            {
+                "llm": {
+                    "provider": "deepseek",
+                    "key": "sk-x",
+                    "model": "deepseek-v4-pro",
+                    "vision_model": "deepseek-flash",
+                    "thinking": "auto",
+                    "url": "https://proxy.example.com/v1",
+                }
+            }
+        )
+        self.assertEqual(resolved["model"], "deepseek-v4-pro")
+        self.assertEqual(resolved["thinking"], "auto")
+        self.assertEqual(resolved["url"], "https://proxy.example.com/v1")
+
+    def test_key_from_env_when_blank(self) -> None:
+        with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "sk-env"}, clear=False):
+            resolved = resolve_llm({"llm": {"provider": "deepseek", "key": ""}})
+        self.assertEqual(resolved["key"], "sk-env")
+
+    def test_custom_provider_needs_all_fields(self) -> None:
+        resolved = resolve_llm({"llm": {"provider": "custom", "key": "k"}})
+        self.assertEqual(resolved["url"], "")
+        self.assertEqual(resolved["model"], "")
+
+    def test_presets_have_labels(self) -> None:
+        choices = dict(preset_choices())
+        for provider in PROVIDER_PRESETS:
+            self.assertIn(provider, choices)
+            self.assertTrue(choices[provider])
+
+    def test_default_thinking_follows_preset(self) -> None:
+        """默认配置里 thinking 留空，这样 DeepSeek 预设的 off 才生效（不然会给短答提取白烧 token）。"""
+        with tempfile.TemporaryDirectory() as folder:
+            config = load_settings(Path(folder) / "config.json")
+        self.assertEqual(config["llm"]["thinking"], "")
+        self.assertEqual(resolve_llm(config)["thinking"], "off")
+
+
+class LlmHelperTest(unittest.TestCase):
+    def test_endpoint_building(self) -> None:
+        self.assertEqual(
+            LlmHelper(url="https://api.deepseek.com", key="k", model="m").endpoint_chat(),
+            "https://api.deepseek.com/v1/chat/completions",
+        )
+        self.assertEqual(
+            LlmHelper(url="https://api.deepseek.com/v1", key="k", model="m").endpoint_chat(),
+            "https://api.deepseek.com/v1/chat/completions",
+        )
+        self.assertEqual(
+            LlmHelper(url="http://127.0.0.1:11434/", key="k", model="m").endpoint_models(),
+            "http://127.0.0.1:11434/v1/models",
+        )
+
+    def test_enabled_requires_url_key_model(self) -> None:
+        self.assertFalse(LlmHelper(url="", key="k", model="m").enabled)
+        self.assertFalse(LlmHelper(url="https://x", key="", model="m").enabled)
+        self.assertFalse(LlmHelper(url="https://x", key="k", model="").enabled)
+        self.assertTrue(LlmHelper(url="https://x", key="k", model="m").enabled)
+
+    def test_thinking_flag_added_only_when_configured(self) -> None:
+        helper = LlmHelper(url="https://x", key="k", model="m", thinking="off")
+        payload = helper._payload([{"role": "user", "content": "hi"}], "m", 8)  # noqa: SLF001
+        self.assertEqual(payload["thinking"], {"type": "disabled"})
+        overridden = helper._payload([], "m", 8, thinking="on")  # noqa: SLF001
+        self.assertEqual(overridden["thinking"], {"type": "enabled"})
+
+        auto = LlmHelper(url="https://x", key="k", model="m", thinking="auto")
+        self.assertNotIn("thinking", auto._payload([], "m", 8))  # noqa: SLF001
+
+    def test_ask_choice_forwards_thinking_override(self) -> None:
+        helper = LlmHelper(url="https://x", key="k", model="m", thinking="auto")
+        topic = {
+            "topic_mode": 31,
+            "stem": {"content": "abandon"},
+            "options": [{"content": "放弃", "answer_tag": 0}],
+        }
+        with patch.object(LlmHelper, "_chat", return_value="0") as chat:
+            self.assertEqual(helper.ask_choice(topic, {}, thinking="off"), 0)
+        self.assertEqual(chat.call_args.kwargs["thinking"], "off")
+
+    def test_thinking_param_is_dropped_on_400(self) -> None:
+        """服务端不认 thinking 参数时要能自动退回，而不是整条兜底链挂掉。"""
+        sent: list[dict] = []
+
+        def fake_request(method, url, *, timeout=None, headers=None, **kwargs):
+            sent.append(kwargs.get("json") or {})
+            if len(sent) == 1:
+                return FakeResponse(400, {"error": {"message": "Unknown parameter: thinking"}})
+            return FakeResponse(200, {"choices": [{"message": {"content": "OK"}}]})
+
+        helper = LlmHelper(url="https://x", key="k", model="m", thinking="off", logger=lambda _m: None)
+        with patch("vocabgo.net.request", side_effect=fake_request):
+            body, error = helper._post({"model": "m", "thinking": {"type": "disabled"}})  # noqa: SLF001
+
+        self.assertEqual(error, "")
+        self.assertIsNotNone(body)
+        self.assertEqual(len(sent), 2)
+        self.assertIn("thinking", sent[0])
+        self.assertNotIn("thinking", sent[1])
+
+    def test_other_400_is_not_retried(self) -> None:
+        sent: list[dict] = []
+
+        def fake_request(method, url, *, timeout=None, headers=None, **kwargs):
+            sent.append(kwargs.get("json") or {})
+            return FakeResponse(400, {"error": {"message": "Insufficient balance"}})
+
+        helper = LlmHelper(url="https://x", key="k", model="m", logger=lambda _m: None)
+        with patch("vocabgo.net.request", side_effect=fake_request):
+            body, error = helper._post({"model": "m", "thinking": {"type": "disabled"}})  # noqa: SLF001
+
+        self.assertIsNone(body)
+        self.assertIn("Insufficient balance", error)
+        self.assertEqual(len(sent), 1, "与 thinking 无关的错误不该重试")
+
+    def test_401_stops_repeated_model_calls(self) -> None:
+        helper = LlmHelper(url="https://x", key="bad", model="m", logger=lambda _m: None)
+        with patch(
+            "vocabgo.net.request",
+            return_value=FakeResponse(401, {"error": {"message": "Authentication Fails"}}),
+        ) as request:
+            self.assertIsNone(helper._chat("test", max_tokens=8))  # noqa: SLF001
+            self.assertTrue(helper.auth_failed)
+            self.assertIsNone(helper._chat("test again", max_tokens=8))  # noqa: SLF001
+        self.assertEqual(request.call_count, 1, "鉴权失败后不应每题重复请求")
+
+    def test_ask_choice_parses_index(self) -> None:
+        helper = LlmHelper(url="https://x", key="k", model="m", logger=lambda _m: None)
+        topic = {
+            "topic_mode": 31,
+            "stem": {"content": "abandon"},
+            "options": [{"content": "n. 好处"}, {"content": "v. 放弃"}, {"content": "adj. 关键的"}],
+        }
+        with patch.object(LlmHelper, "_chat", return_value="2"):
+            self.assertEqual(helper.ask_choice(topic, {}), 2)
+        with patch.object(LlmHelper, "_chat", return_value="选项 1"):  # 夹带文字也能抠出数字
+            self.assertEqual(helper.ask_choice(topic, {}), 1)
+        with patch.object(LlmHelper, "_chat", return_value="9"):  # 越界要拒绝
+            self.assertIsNone(helper.ask_choice(topic, {}))
+        with patch.object(LlmHelper, "_chat", return_value="B. v. 放弃"):
+            self.assertEqual(helper.ask_choice(topic, {}), 1, "选项字母也要能解析")
+        with patch.object(LlmHelper, "_chat", return_value="adj. 关键的"):
+            self.assertEqual(helper.ask_choice(topic, {}), 2, "直接输出选项内容也要能解析")
+
+    def test_ask_choice_uses_majority_vote(self) -> None:
+        helper = LlmHelper(url="https://x", key="k", model="m", logger=lambda _m: None)
+        topic = {
+            "topic_mode": 31,
+            "stem": {"content": "abandon"},
+            "options": [{"content": "n. 好处"}, {"content": "v. 放弃"}, {"content": "adj. 关键的"}],
+        }
+        with patch.object(LlmHelper, "_chat", side_effect=["A", "1", "B"]):
+            self.assertEqual(helper.ask_choice(topic, {}, votes=3), 1)
+        with patch.object(LlmHelper, "_chat", side_effect=["0", "1", "2"]):
+            self.assertIsNone(helper.ask_choice(topic, {}, votes=3), "三次完全不同时不硬选")
+
+    def test_ask_phrase_normalizes(self) -> None:
+        helper = LlmHelper(url="https://x", key="k", model="m", logger=lambda _m: None)
+        topic = {
+            "topic_mode": 32,
+            "stem": {"content": "___ ___ ___", "remark": "许多例子"},
+            "options": [{"content": item} for item in ("in", "many", "instances", "unused")],
+        }
+        with patch.object(LlmHelper, "_chat", return_value="in many instances"):
+            self.assertEqual(helper.ask_phrase(topic, {}), "in,many,instances")
+        with patch.object(LlmHelper, "_chat", side_effect=["in many instances", "in,many,instances", "other"]):
+            self.assertEqual(helper.ask_phrase(topic, {}, votes=3), "in,many,instances")
+
+        article_topic = {
+            "topic_mode": 32,
+            "stem": {"content": "_ _ _", "remark": "弱势团体"},
+            "options": [{"content": item} for item in ("a", "vulnerable", "group", "ribbon")],
+        }
+        with patch.object(LlmHelper, "_chat", return_value="vulnerable group"):
+            self.assertEqual(
+                helper.ask_phrase(article_topic, {}, votes=3),
+                "a,vulnerable,group",
+                "漏掉的冠词应自动补齐",
+            )
+
+    def test_ask_fill_uses_final_english_line_and_majority(self) -> None:
+        helper = LlmHelper(url="https://x", key="k", model="m", logger=lambda _m: None)
+        topic = {
+            "topic_mode": 51,
+            "stem": {"content": "plain {}", "remark": "平民百姓"},
+            "options": [],
+        }
+        with patch.object(
+            LlmHelper,
+            "_chat",
+            side_effect=["思考\nplain", "plain", "another word"],
+        ):
+            self.assertEqual(helper.ask_fill(topic, {}, votes=3), "plain")
+
+        unknown_mode_topic = {
+            "topic_mode": 61,
+            "stem": {"content": "{} of knowledge", "remark": "知识前沿"},
+            "options": [],
+        }
+        with patch.object(LlmHelper, "_chat", return_value="frontier"):
+            self.assertEqual(helper.ask_fill(unknown_mode_topic, {}, votes=3), "frontier")
+
+
+class PathsTest(unittest.TestCase):
+    def test_source_mode_paths(self) -> None:
+        self.assertFalse(is_frozen())
+        self.assertEqual(app_dir(), Path(__file__).resolve().parent.parent)
+        self.assertTrue(str(config_path()).endswith("config.json"))
+
+    def test_override_path_is_honoured(self) -> None:
+        override = Path(tempfile.gettempdir()) / "my_config.json"
+        self.assertEqual(config_path(override), override)
+
+    def test_bank_moves_to_app_data_and_migrates_legacy_file(self) -> None:
+        folder = Path(tempfile.mkdtemp())
+        program = folder / "program"
+        local = folder / "local"
+        program.mkdir()
+        (program / "bank.json").write_text('{"old": "answer"}', encoding="utf-8")
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(local)}), patch(
+            "vocabgo.paths.app_dir", return_value=program
+        ):
+            target = bank_path()
+            self.assertEqual(data_dir(), local / "VocabgoAuto")
+        self.assertEqual(target, local / "VocabgoAuto" / "bank.json")
+        self.assertTrue(target.exists())
+        self.assertIn("old", target.read_text(encoding="utf-8"))
+
+
+class GuessModelsTest(unittest.TestCase):
+    """从 /models 返回值里自动认出「答题模型」和「读图模型」。"""
+
+    def test_deepseek_picks_preset_names(self) -> None:
+        ids = ["deepseek-flash", "deepseek-v4-pro"]
+        text, vision = guess_models(ids, "deepseek")
+        self.assertEqual(text, "deepseek-flash")
+        self.assertEqual(vision, "deepseek-flash")
+
+    def test_vision_by_name_hint(self) -> None:
+        ids = ["qwen2.5:7b", "qwen2.5vl:7b", "llama3:8b"]
+        text, vision = guess_models(ids, "ollama")
+        self.assertEqual(vision, "qwen2.5vl:7b")
+        self.assertEqual(text, "qwen2.5:7b")
+
+    def test_single_model_serves_both(self) -> None:
+        text, vision = guess_models(["gpt-4o-mini"], "openai")
+        self.assertEqual(text, "gpt-4o-mini")
+        self.assertEqual(vision, "gpt-4o-mini")
+
+    def test_unknown_provider_falls_back_to_first(self) -> None:
+        text, vision = guess_models(["model-a", "model-b"], "custom")
+        self.assertEqual(text, "model-a")
+        self.assertEqual(vision, text, "没有视觉特征时就跟随答题模型")
+
+    def test_empty_list(self) -> None:
+        self.assertEqual(guess_models([], "deepseek"), ("", ""))
+
+
+class RecommendedConfigTest(unittest.TestCase):
+    """推荐配置：既要在程序里生效，也要和说明书写的一致（别各说各话）。"""
+
+    # 说明书的表格里每一条「项目」对应配置里的哪个字段
+    NOTE_PATHS = {
+        "服务商": ("llm", "provider"),
+        "答题模型": ("llm", "model"),
+        "读图模型": ("llm", "vision_model"),
+        "思考模式": ("llm", "thinking"),
+        "作答间隔": ("runtime", "pace"),
+        "试答案兜底": ("runtime", "probe"),
+        "读图": ("runtime", "ocr"),
+        "练习轮数": ("runtime", "loop"),
+        "满分阈值": ("runtime", "max_score"),
+        "班级安全覆盖线": ("runtime", "class_min_coverage"),
+    }
+
+    def test_notes_cover_every_recommended_field(self) -> None:
+        note_names = [name for name, _, _ in RECOMMENDED_NOTES]
+        self.assertEqual(sorted(note_names), sorted(self.NOTE_PATHS), "说明书表格与推荐配置漂移了")
+        for name, value, why in RECOMMENDED_NOTES:
+            self.assertTrue(value and why, f"{name} 缺少说明")
+
+    def test_recommended_values_match_notes(self) -> None:
+        config = apply_recommended({})
+        for name, _, _ in RECOMMENDED_NOTES:
+            section, key = self.NOTE_PATHS[name]
+            self.assertIn(key, config[section], f"{name} 在推荐配置里没有对应项")
+
+        self.assertEqual(config["llm"]["provider"], "deepseek")
+        self.assertEqual(config["llm"]["thinking"], "off", "短答任务不该默认开思考")
+        self.assertEqual(config["runtime"]["pace"], [1.5, 3.5], "推荐节奏要比默认更保守")
+        self.assertTrue(config["runtime"]["probe"])
+        self.assertTrue(config["runtime"]["ocr"])
+        self.assertEqual(config["vision"]["backend"], "auto")
+
+    def test_apply_recommended_keeps_credentials(self) -> None:
+        existing = {
+            "auth": {"usertoken": "my-token", "abc": "a", "authorization_v": "v"},
+            "llm": {"key": "sk-my-key"},
+        }
+        merged = apply_recommended(existing)
+        self.assertEqual(merged["auth"]["usertoken"], "my-token", "推荐配置不能动用户令牌")
+        self.assertEqual(merged["llm"]["key"], "sk-my-key", "推荐配置不能覆盖用户密钥")
+        self.assertEqual(merged["llm"]["model"], "deepseek-flash")
+
+    def test_recommended_survives_save_load(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "config.json"
+            save_settings(apply_recommended({"llm": {"key": "sk-1"}}), path)
+            again = load_settings(path)
+        self.assertEqual(again["runtime"]["loop"], 3)
+        self.assertEqual(again["llm"]["key"], "sk-1")
+
+    def test_recommended_lines_are_readable(self) -> None:
+        lines = recommended_lines()
+        self.assertEqual(len(lines), len(RECOMMENDED_NOTES))
+        self.assertTrue(all(line.startswith("　") for line in lines))
+
+
+class GuiPlaceholderTest(unittest.TestCase):
+    """灰色占位提示不能污染配置 —— 否则「留空即自动推算」会被当成真值发进请求头。"""
+
+    def setUp(self) -> None:
+        try:
+            import tkinter
+        except Exception as exc:  # pragma: no cover
+            self.skipTest(f"环境不支持 Tk：{exc}")
+        import vocabgo.gui as gui  # noqa: PLC0415
+
+        self.folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.folder, ignore_errors=True)
+        old_env = os.environ.get("VOCABGO_CONFIG")
+        os.environ["VOCABGO_CONFIG"] = str(Path(self.folder) / "config.json")
+        self.addCleanup(lambda: os.environ.__setitem__("VOCABGO_CONFIG", old_env) if old_env else os.environ.pop("VOCABGO_CONFIG", None))
+
+        try:
+            self.root = tkinter.Tk()
+        except Exception as exc:  # pragma: no cover
+            self.skipTest(f"Tk 初始化失败：{exc}")
+        self.addCleanup(self.root.destroy)
+        self.root.geometry("+4000+4000")  # 挪到屏幕外，别打扰
+        self.app = gui.VocabgoApp(self.root)
+        self.root.update()
+
+    def test_hint_shows_when_empty_and_does_not_touch_variable(self) -> None:
+        self.root.update()
+        self.assertEqual(self.app.var_abc.get(), "", "占位提示绝不能写进变量")
+        self.assertEqual(self.app.var_auth_v.get(), "")
+        self.assertTrue(self.app.hint_abc.winfo_ismapped(), "空值时应显示灰色提示")
+        self.assertTrue(self.app.hint_auth_v.winfo_ismapped())
+
+    def test_hint_hides_once_user_types(self) -> None:
+        self.app.var_abc.set("real-captured-abc")
+        self.app.hint_abc._refresh()  # type: ignore[attr-defined]  # noqa: SLF001
+        self.root.update()
+        self.assertFalse(self.app.hint_abc.winfo_ismapped())
+        self.assertEqual(self.app.var_abc.get(), "real-captured-abc")
+
+        self.root.focus_set()  # 焦点挪出输入框（聚焦时提示本就该隐藏）
+        self.app.var_abc.set("")
+        self.app.hint_abc._refresh()  # type: ignore[attr-defined]  # noqa: SLF001
+        self.root.update()
+        self.assertTrue(self.app.hint_abc.winfo_ismapped(), "清空且失焦后提示应回来")
+
+    def test_collected_config_has_no_placeholder(self) -> None:
+        config = self.app.collect_config()
+        self.assertEqual(config["auth"]["abc"], "")
+        self.assertEqual(config["auth"]["authorization_v"], "")
+        self.assertNotIn("留空即自动推算", json.dumps(config, ensure_ascii=False), "提示文字泄漏进配置了")
+
+
+    def test_ui_forwards_keyword_arguments(self) -> None:
+        """踩过的坑：ui() 只收 *args，界面里 self.ui(self.progress.configure, value=100) 直接崩。
+
+        报错长这样：TypeError: VocabgoApp.ui() got an unexpected keyword argument 'value'
+        """
+        seen: dict = {}
+        self.app.ui(lambda **kwargs: seen.update(kwargs), value=100, other="x")  # noqa: SLF001
+        self.root.update()
+        self.assertEqual(seen, {"value": 100, "other": "x"})
+
+    def test_login_dialog_opens_and_closes(self) -> None:
+        """点「登录获取令牌」应弹出登录对话框（账号密码 / 用户ID+验证码）。"""
+        self.app.on_login()
+        self.root.update()
+        self.assertIsNotNone(self.app.login_window, "应该弹出登录窗口")
+        self.assertTrue(self.app.login_window.winfo_exists())
+        self.app._close_login_window()  # noqa: SLF001
+        self.root.update()
+        self.assertIsNone(self.app.login_window)
+
+    def test_captcha_image_renders_in_dialog(self) -> None:
+        """服务端给的验证码 data-URI 要能直接画在对话框上。"""
+        import base64  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+
+        from vocabgo.vision import render_probe_image  # noqa: PLC0415
+
+        self.app.on_login()
+        self.root.update()
+        with tempfile.TemporaryDirectory() as folder:
+            png = render_probe_image("8a3f", Path(folder) / "captcha.png")
+            if png is None:
+                self.skipTest("没有 Pillow，无法造验证码图")
+            data_uri = "data:image/png;base64," + base64.b64encode(png.read_bytes()).decode("ascii")
+
+        self.app._show_captcha("REQ-TEST", data_uri)  # noqa: SLF001
+        self.root.update()
+        self.assertEqual(self.app._captcha_req_no, "REQ-TEST")  # noqa: SLF001
+        self.assertIsNotNone(getattr(self.app.lbl_captcha, "image", None), "验证码图片应挂到控件上")
+        self.app._close_login_window()  # noqa: SLF001
+
+
+class UnstartedTaskTest(unittest.TestCase):
+    """词达人给「还没开始过」的任务发 task_id<=0，直接请求会报「加载任务信息失败」。
+
+    所以要能识别出来：列表里标 ⚠️未开始、自动选中时跳过、真去刷时提前拦住。
+    """
+
+    def test_detects_unstarted_tasks(self) -> None:
+        from vocabgo.gui import VocabgoApp  # noqa: PLC0415
+
+        for bad in ({"task_id": -1}, {"task_id": 0}, {"task_id": None}, {}, {"task_id": "0"}, {"task_id": "abc"}):
+            self.assertTrue(VocabgoApp._is_unstarted(bad), f"应判定为未开始：{bad}")  # noqa: SLF001
+
+    def test_normal_task_is_not_unstarted(self) -> None:
+        from vocabgo.gui import VocabgoApp  # noqa: PLC0415
+
+        for good in ({"task_id": 166805546}, {"task_id": "166805546"}):
+            self.assertFalse(VocabgoApp._is_unstarted(good), f"不该判定为未开始：{good}")  # noqa: SLF001
+
+
+class ClassTaskSafetyTest(unittest.TestCase):
+    """班级任务只有一次机会 —— 默认不许「故意答错」，并且要能报题库覆盖率。"""
+
+    def test_probe_off_for_class_by_default(self) -> None:
+        from vocabgo.settings import DEFAULT_SETTINGS  # noqa: PLC0415
+
+        self.assertFalse(DEFAULT_SETTINGS["runtime"]["probe_on_class"], "班级任务默认必须关掉试答案")
+
+    def test_cover_count(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        from vocabgo.bank import Bank  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as folder:
+            bank = Bank(Path(folder) / "bank.json")
+            bank.put("32::norm::_ _ _::数学公式::a|formula", "a mathematical formula", stem="_  _  _ (数学公式)", flush=False)
+            bank.put("11::norm::he {twisted} the wire::他扭曲铁丝::v. 扭|v. 拉", 0, stem="He twisted the wire", flush=False)
+            names = ["twist", "formula", "完全没见过的词"]
+            self.assertEqual(bank.cover_count(names), 2, "twist/formula 都在题库里，第三个没有")
+            self.assertEqual(bank.cover_count([]), 0)
+
+
+class GuiImportTest(unittest.TestCase):
+    def test_gui_module_imports(self) -> None:
+        """GUI 至少要在无显示器/打包环境下也能 import（Tk 只在 main 里创建）。"""
+        import vocabgo.gui as gui  # noqa: PLC0415
+
+        self.assertTrue(hasattr(gui, "VocabgoApp"))
+        self.assertTrue(callable(gui.main))
+
+    def test_app_entry_selftest_runs(self) -> None:
+        """打包入口的自检在源码模式下也要能跑通（打包后同样用它验收）。"""
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        import vocabgo_app  # noqa: PLC0415
+
+        self.assertEqual(vocabgo_app.selftest(), 0, "自检应全部通过")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

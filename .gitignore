@@ -1,0 +1,37 @@
+# Local credentials and runtime data
+config.json
+bank.json
+bank.json.lock
+materials.json
+glossary.json
+selftest.txt
+captured_headers.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Packaging output
+build/
+dist/
+release/
+*.spec
+
+# User materials and temporary files
+materials/
+*.tmp
+*.log
+*.bak
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+

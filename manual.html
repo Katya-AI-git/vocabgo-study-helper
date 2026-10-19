@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>词达人工具优化版 V3 使用说明</title>
+<style>
+:root { color-scheme: light; }
+body { margin:0; background:#f3f6f8; color:#1f2933; font:16px/1.75 "Microsoft YaHei","PingFang SC",sans-serif; }
+header { padding:42px 24px 28px; background:#17324d; color:#fff; }
+header h1 { margin:0 0 8px; font-size:30px; }
+header p { margin:0; color:#cfe0ee; }
+nav { margin-top:20px; display:flex; gap:10px; flex-wrap:wrap; }
+nav a { color:#fff; text-decoration:none; border:1px solid #6f91ad; border-radius:4px; padding:6px 12px; }
+main { max-width:980px; margin:28px auto 60px; padding:0 18px; }
+article { background:#fff; border:1px solid #d9e2e8; border-radius:6px; padding:24px 30px; margin-bottom:22px; }
+article > h2:first-child { margin-top:0; }
+h2 { color:#17324d; border-bottom:1px solid #e3e9ed; padding-bottom:8px; }
+h3,h4 { color:#264d6d; }
+code { background:#eef2f5; padding:2px 5px; border-radius:3px; }
+pre { background:#17212b; color:#e8eef3; padding:16px; overflow:auto; border-radius:5px; }
+pre code { background:transparent; padding:0; color:inherit; }
+li { margin:5px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>词达人工具优化版 V3</h1>
+  <p>用户说明已合并为一个 HTML 文件，不需要 Typora。版本变化见 <a href="版本记录.txt">版本记录.txt</a>。</p>
+  <nav><a href="#quick">快速上手</a><a href="#guide">详细使用说明</a><a href="#optimization">本地资料与优化</a><a href="#cache">缓存策略说明</a><a href="#continue">继续练习修复</a></nav>
+</header>
+<main><article id="quick"><h2>快速上手</h2><p>本版本在 V2 基础上新增：</p>
+<p>1. 本地资料库 2. 自适应思考模式 3. 文字型 PDF、DOCX、EPUB 教材导入 4. 用 pypdf 解析 PDF</p>
+<p>本地资料库：</p>
+<ul>
+<li>在“设置”页点击“导入资料”。</li>
+<li>支持 TXT、MD、CSV、JSON、DOCX、EPUB 和文字型 PDF。</li>
+<li>脚本先在本地查询词表和教材，不消耗大模型 token。</li>
+<li>明确命中的选择题、短语题直接作答。</li>
+<li>无法确定时才把当前题目和少量相关片段交给模型。</li>
+<li>资料保存在 %LOCALAPPDATA%\VocabgoAuto\materials。</li>
+</ul>
+<p>自适应思考：</p>
+<ul>
+<li>基础词义、普通短语和填空题先关闭思考。</li>
+<li>答案为空、格式异常或多票冲突时，自动开启思考重试一次。</li>
+<li>句中专词义且没有本地证据时，直接使用思考模式。</li>
+<li>设置页可关闭“按题型自动切换思考模式”。</li>
+</ul>
+<p>V2 已有修复：</p>
+<ul>
+<li>首次开始任务时可以重置选词。</li>
+<li>服务器返回 20001 后自动续答时不再发送 reset_chose_words。</li>
+<li>后续学习轮次不会反复回到 66%。</li>
+<li>测试任务、班级学习任务和自学任务使用独立轮数。</li>
+</ul>
+<p>文件说明：</p>
+<p>1. vocabgo-optimized-exe 已解压免安装 EXE，直接双击 Vocabgo.exe。</p>
+<p>2. vocabgo-optimized-exe-win32.zip 免安装 EXE 压缩包，适合没有 Python 的同学。</p>
+<p>3. vocabgo-optimized-source-auto-python.zip 源码包；没有 Python 时会自动下载并校验官方 Python。</p>
+<p>首次使用：</p>
+<p>1. 启动 EXE 或 启动.bat。 2. 在“设置”页填写自己的 DeepSeek API Key，可选。 3. 按需导入四级词表或教材。 4. 点击“登录获取令牌”，使用自己的微信扫码。 5. 刷新任务并选择开始刷题。</p>
+<p>注意：</p>
+<ul>
+<li>每个人必须使用自己的微信令牌和 API Key。</li>
+<li>同一时间只能运行一个刷题器。</li>
+<li>题库、词典缓存和用户资料保存在 %LOCALAPPDATA%\VocabgoAuto。</li>
+<li>不要分享 config.json、bank.json、materials.json 或 API Key。</li>
+</ul></article><article id="guide"><h2>详细使用说明</h2><h3>词达人微信扫码自动答题工具</h3>
+<p>本项目基于 MIT 许可证开源项目 <code>xuhaoranbb-boop/vocabgo-auto</code> 的提交 <code>3b766dfe76a7577d80ffd9ebab42a7eea7ba4e14</code>，面向个人账号的志愿学习辅助使用。</p>
+<h4>首次使用</h4>
+<p>1. 双击 <code>启动.bat</code>。首次运行会自动创建 <code>.venv</code> 并安装依赖，需要保持联网。 2. 如果电脑没有安装 Python，启动脚本会自动从 python.org 下载并校验官方 Python 3.12，安装到项目内的 <code>runtime</code> 目录，不修改系统 Python。 3. 安装完成后会在项目内创建 <code>.venv</code>，以后启动不再重复下载。 4. 在「设置」页可选择填写 DeepSeek 接口密钥；不填写也能运行，但遇到题库未覆盖的题目时正确率会下降。 5. 可在「设置」页的「本地资料库」导入 TXT、CSV、JSON、DOCX、EPUB 或文字型 PDF 词表和教材。 6. 回到「刷题」页，点击「登录获取令牌」。 7. 选择微信扫码，按界面提示在微信中完成授权，再把带 <code>code</code> 的链接粘回程序。 8. 点击「刷新任务」可逐条选择任务；也可以直接点击「一键全部刷完」。</p>
+<h4>本地资料库</h4>
+<ul>
+<li>脚本先在本地解析、去重和检索资料，上传和查询资料本身不消耗大模型 token。</li>
+<li>词表格式支持 <code>ubiquitous adj. 普遍存在的；无处不在的</code>、<code>word=释义</code>、CSV 和 JSON。</li>
+<li>中文短语格式支持 <code>许多例子 = many examples</code>。</li>
+<li>明确命中的选择题或短语题直接作答；无法确定时，只把当前题目和少量相关片段交给模型。</li>
+<li>扫描版 PDF 如果没有可提取文字，会提示先做 OCR；带密码或 DRM 的电子书无法读取。</li>
+<li>资料保存在 <code>%LOCALAPPDATA%\VocabgoAuto\materials</code>，不会写进分享包。</li>
+</ul>
+<h4>自适应思考</h4>
+<ul>
+<li>默认开启“按题型自动切换思考模式”。</li>
+<li>基础词义、短语组词和普通填空先关闭思考，减少推理 token。</li>
+<li>答案为空、格式异常或多票冲突时，自动开启思考重试一次。</li>
+<li>句中专词义且没有本地词典或资料证据时，直接使用思考模式。</li>
+<li>关闭该选项后，模型会固定使用“思考模式”下拉框里的设置。</li>
+</ul>
+<h4>一键全部刷完</h4>
+<ul>
+<li>自动处理所有进度未满、已经开始作答的班级任务，不再自动处理自学任务，也不再用自学任务给班级任务备题。</li>
+<li>一键全刷中，班级任务只按 <code>progress &lt; 100</code> 加入；进度已经 100% 的任务不会因为得分较低而重复刷。自学任务则以任务得分 100 为完成线。</li>
+<li>班级任务开跑前会先用对应自学任务补题库，题库覆盖达到安全线后才作答。</li>
+<li>覆盖不足时会跳过该班级任务，避免浪费一次性作答机会；日志会说明跳过了几条。</li>
+<li>尚未开始的班级任务需要先在词达人微信端点开一次，再回来重新运行。</li>
+<li>单条任务失败不会中断整批，程序会继续处理后面的任务。</li>
+</ul>
+<h4>刷选中任务</h4>
+<ul>
+<li>任务列表支持 <code>Ctrl</code> 多选和 <code>Shift</code> 连续选择。</li>
+<li>选择多条班级任务后，点击“刷选中任务”即可依次自动完成。</li>
+<li>列表会标记 <code>task_type=1</code> 对应的“测试任务”和 <code>task_type=2</code> 对应的“学习任务”。</li>
+<li>测试任务只有一次机会，固定执行一次并默认只处理进度未满的任务。</li>
+<li>学习任务使用“班级学习轮数”，可以按设置重复学习。</li>
+<li>学习任务需要重刷进度 100% 的任务时，先勾选“允许重刷已完成学习任务”。</li>
+<li>未勾选时，进度 100% 的任务无论得分多少都会跳过。</li>
+</ul>
+<h4>微信作答说明</h4>
+<ul>
+<li>登录必须通过微信授权；工具不会要求词达人账号密码。</li>
+<li>授权成功后，不要在手机、平板或另一台电脑上重复登录词达人，否则令牌可能失效。</li>
+<li>词达人令牌通常约 6 小时失效，程序会提前提示重新授权。</li>
+<li>班级任务通常只有一次机会。默认策略会先关闭“故意答错再试答案”，避免永久拉低成绩。</li>
+<li>不填大模型密钥也能运行，主要依靠备题题库、本地资料、在线词典和规则匹配；若希望生词题正确率更高，建议在设置页配置 DeepSeek 密钥。</li>
+<li>班级任务默认会把难题独立询问大模型 3 次并取多数答案，正确率更高，但也会增加模型调用次数和耗时。</li>
+<li>短语组词题会严格校验空格数量和选项池；模型推理额度用完或返回空内容时会自动放大额度重试，最多补采样到五票。</li>
+<li><code>mode 51</code> 无选项填空题会调用专用填空提示词，例如 <code>plain {}（平民百姓）</code> 会提交 <code>folk</code>，不再错误提交 <code>0</code>。</li>
+<li>其他只要没有选项、也不是短语排序的题型，同样会自动使用填空模型，不再因 mode 编号变化而提交 <code>0</code>。</li>
+<li><code>mode 22</code> 单词选义题会按旧答案的释义内容复用题库，即使选项顺序和标点变化也能命中；出现多个可能答案时交给大模型，绝不按旧下标硬选。</li>
+<li>班级任务遇到 <code>20004 任务已完成</code> 时会读取真实进度：低于 100% 自动重连续答，最多 5 次；达到 100% 才停止。</li>
+<li>遇到 <code>20001 需要选词</code> 时会自动重新读取未达标单词并继续，不再把“本轮选词结束”误认为整条任务完成。</li>
+<li>自动续答会对比服务器总进度；如果新会话完成后总进度没有提升，会停止重复循环并保留日志，避免反复从 1/79 开始。</li>
+<li>界面的“自学轮数”只作用于自学任务；班级任务固定使用任务内自动续答，不会被外层轮数重复整条执行。</li>
+<li>工具使用系统单实例锁，重复双击启动时会提示已有实例，避免两个窗口同时写题库。</li>
+<li>如果日志出现 <code>HTTP 401 Authentication Fails</code>，说明 API Key 无效，程序会停止重复请求并转入题库兜底；需要重新创建密钥。</li>
+</ul>
+<h4>测试</h4>
+<pre><code>.\.venv\Scripts\python.exe -m unittest discover -s tests -p &quot;test_*.py&quot;
+.\.venv\Scripts\python.exe vocabgo_app.py --selftest</code></pre>
+<h4>隐私与风险</h4>
+<ul>
+<li><code>config.json</code> 会保存微信授权令牌和可选的大模型密钥，不要上传或发送给他人。</li>
+<li>题库 <code>bank.json</code>、词典缓存和用户资料会自动保存在 <code>%LOCALAPPDATA%\VocabgoAuto</code>，不会留在桌面程序目录，避免 QQ 扫描、上传或同步文件时占用题库，也不会把个人教材打进分享包。</li>
+<li>自动化操作可能受平台规则和接口更新影响；请仅在自己的账号上低频使用，并遵守学校与平台要求。</li>
+</ul></article><article id="optimization"><h2>本地资料与优化</h2><h3>优化版 V3 说明</h3>
+<p>本版本在原有题库、答题、批量任务和继续练习修复的基础上，新增两项主要能力。</p>
+<h4>本地资料库</h4>
+<ul>
+<li>支持导入 TXT、MD、CSV、JSON、DOCX、EPUB 和文字型 PDF。</li>
+<li>自动识别词表、短语和教材正文。</li>
+<li>词表格式支持 <code>ubiquitous adj. 普遍存在的</code>、<code>word=释义</code>、CSV 和 JSON。</li>
+<li>短语格式支持 <code>许多例子 = many examples</code>。</li>
+<li>明确命中的题目由脚本直接作答，不调用大模型。</li>
+<li>无法确定时只发送相关片段，不上传整本电子书。</li>
+<li>资料保存在 <code>%LOCALAPPDATA%\VocabgoAuto\materials</code>。</li>
+</ul>
+<p>扫描版 PDF 如果没有可提取文字，会提示先做 OCR；带密码或 DRM 的电子书无法读取。</p>
+<h4>自适应思考</h4>
+<ul>
+<li>基础词义、普通短语和填空题先关闭思考。</li>
+<li>没有稳定答案、格式异常或多票冲突时，开启思考重试一次。</li>
+<li><code>mode=11</code> 句中专词义且没有本地证据时，直接使用思考模式。</li>
+<li>有词典或资料证据时，优先关闭思考。</li>
+</ul>
+<p>真实测试使用 12 道已知答案题：</p>
+<ul>
+<li>关闭思考：输出 21 token，推理 0，总 token 1,064。</li>
+<li>开启思考：输出 579 token，推理 546，总 token 1,922。</li>
+<li>两种模式在该批基础题上的有效正确率相同。</li>
+</ul>
+<p>这证明基础题默认关闭思考可以减少开销，但复杂题仍保留升级到思考模式的能力。</p>
+<h4>缓存说明</h4>
+<ul>
+<li>DeepSeek 的缓存是尽力而为，不保证 100% 命中。</li>
+<li>短提示可能无法形成稳定缓存。</li>
+<li>简单地在完整任务中反复携带历史会扩大总输入，命中率提高也可能更贵。</li>
+<li>本版本不保存整轮 100 题历史，改用本地题库和资料库减少模型调用。</li>
+</ul></article><article id="cache"><h2>缓存策略说明</h2><h3>缓存优化版说明</h3>
+<p>本版本保留原版全部答题逻辑，仅调整大模型请求的缓存布局：</p>
+<ul>
+<li>系统提示固定，不再包含每次变化的 UUID。</li>
+<li>采样编号移动到用户提示末尾。</li>
+<li>完整保留 3 次投票和短语补采样，不减少判断次数。</li>
+<li>记录缓存命中输入、未命中输入、推理输出和总 token。</li>
+<li>题目、选项、词典释义、模型、思考模式和答案解析均未改变。</li>
+</ul>
+<p>DeepSeek 的上下文缓存由服务端自动管理。缓存写入需要数秒，并且短前缀可能不会形成可命中的缓存单元。较长且重复的公共前缀更容易命中。</p>
+<p>实测参考：</p>
+<ul>
+<li>约 112 token 的短提示：缓存命中 0%。</li>
+<li>约 2200 token 的稳定前缀：第三次请求后命中率约 91.2%。</li>
+</ul>
+<p>因此本优化不会改变答题效果，但缓存提升幅度取决于实际题目的提示长度和重复程度。</p></article><article id="continue"><h2>继续练习修复</h2><h3>继续练习重置修复</h3>
+<p>本次修复解决学习任务完成部分阶段后反复回到 66% 的问题。</p>
+<ul>
+<li>首次开始任务或主动重新选词时，仍可发送 <code>reset_chose_words=1</code>。</li>
+<li>服务器返回 <code>20001 需要选词</code> 后的自动续答不发送重置字段。</li>
+<li>同一任务后续答题会话不重复重置。</li>
+<li>班级学习任务会读取 <code>exist_little_task</code>：</li>
+<li><code>2</code>：开始选词，首次允许重置。</li>
+<li><code>1</code>：继续练习，不重置。</li>
+<li>自学任务也采用相同规则。</li>
+<li>CLI 与 GUI 均已同步。</li>
+</ul>
+<p>题目、答案策略、轮数设置、配置、令牌和题库均未改变。</p></article></main>
+</body>
+</html>

@@ -1,0 +1,35 @@
+Third-party attribution and modification notice
+================================================
+
+Original project:
+  vocabgo-auto
+
+Original author:
+  YG (xuhaoranbb-boop)
+
+Original repository:
+  https://github.com/xuhaoranbb-boop/vocabgo-auto
+
+Original license:
+  MIT License
+
+This repository contains a modified and extended version of the original
+project. Significant changes include the desktop GUI, task workflows,
+local question bank, local material library, document import, adaptive
+model selection, OCR integration, packaging scripts, documentation, and
+additional tests.
+
+The original MIT copyright and permission notice is preserved in LICENSE.
+
+Other public projects consulted for protocol research and interoperability
+include:
+
+  https://github.com/github123666/cidaren
+  https://github.com/ularch/Easy_Cidaren
+  https://github.com/LangQi99/cidaren
+  https://github.com/Rain-shadow/cdr
+  https://github.com/haojiezhe12345/vocabgo-auto
+
+No third-party textbook, question bank, user account, access token, or API
+key is included in this repository.
+
