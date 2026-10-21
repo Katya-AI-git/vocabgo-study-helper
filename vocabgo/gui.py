@@ -1499,15 +1499,30 @@ class VocabgoApp:
                 reset_chose_words = allow_reset and int(study_info.get("exist_little_task") or 1) == 2
             except Exception:
                 reset_chose_words = False
-            client.study_submit_chose_word(
-                task_id,
-                course_id,
-                list_id,
-                word_map,
-                task_type=task_type,
-                grade=grade,
-                reset_chose_words=reset_chose_words,
-            )
+            try:
+                client.study_submit_chose_word(
+                    task_id,
+                    course_id,
+                    list_id,
+                    word_map,
+                    task_type=task_type,
+                    grade=grade,
+                    reset_chose_words=reset_chose_words,
+                )
+            except VocabgoError as exc:
+                if not reset_chose_words and "存在小节任务未完成" in str(exc):
+                    self.log("⚠️ 服务端要求先处理小节任务，自动重置选词后重试")
+                    client.study_submit_chose_word(
+                        task_id,
+                        course_id,
+                        list_id,
+                        word_map,
+                        task_type=task_type,
+                        grade=grade,
+                        reset_chose_words=True,
+                    )
+                else:
+                    raise
             solver.kind = "study"
             return solver.run(task_id=task_id, course_id=course_id, list_id=list_id, task_type=task_type, grade=grade)
 
@@ -1556,11 +1571,25 @@ class VocabgoApp:
                 f"📝 第 {session}/6 个答题会话：共 {len(words)} 词，"
                 f"待练 {sum(len(v) for v in word_map.values())} 词"
             )
-            client.submit_chose_word(
-                task_id,
-                word_map,
-                reset_chose_words=(session == 1 and initial_reset),
-            )
+            reset_now = session == 1 and initial_reset
+            try:
+                client.submit_chose_word(
+                    task_id,
+                    word_map,
+                    reset_chose_words=reset_now,
+                )
+            except VocabgoError as exc:
+                if (
+                    not reset_now and "存在小节任务未完成" in str(exc)
+                ):
+                    self.log("⚠️ 服务端要求先处理小节任务，自动重置选词后重试")
+                    client.submit_chose_word(
+                        task_id,
+                        word_map,
+                        reset_chose_words=True,
+                    )
+                else:
+                    raise
             solver.kind = "class"
             stats = solver.run(task_id=task_id, release_id=release_id)
             if stats.cancelled:

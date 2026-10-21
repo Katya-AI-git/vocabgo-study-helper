@@ -100,7 +100,7 @@ li { margin:5px 0; }
 <ul>
 <li>任务列表支持 <code>Ctrl</code> 多选和 <code>Shift</code> 连续选择。</li>
 <li>选择多条班级任务后，点击“刷选中任务”即可依次自动完成。</li>
-<li>列表会标记 <code>task_type=1</code> 对应的“测试任务”和 <code>task_type=2</code> 对应的“学习任务”。</li>
+<li>列表会标记 <code>task_type=1</code> 对应的“学习任务”和 <code>task_type=2</code> 对应的“测试任务”。</li>
 <li>测试任务只有一次机会，固定执行一次并默认只处理进度未满的任务。</li>
 <li>学习任务使用“班级学习轮数”，可以按设置重复学习。</li>
 <li>学习任务需要重刷进度 100% 的任务时，先勾选“允许重刷已完成学习任务”。</li>
@@ -189,7 +189,9 @@ li { margin:5px 0; }
 <li>同一任务后续答题会话不重复重置。</li>
 <li>班级学习任务会读取 <code>exist_little_task</code>：</li>
 <li><code>2</code>：开始选词，首次允许重置。</li>
-<li><code>1</code>：继续练习，不重置。</li>
+<li><code>1</code>：继续练习，通常不重置。</li>
+<li>如果服务器返回“存在小节任务未完成”，学习任务和测试任务都会自动带 <code>reset_chose_words=1</code> 重试一次。</li>
+<li>该重试只清除当前未完成的选词批次，不会清空已提交成绩。</li>
 <li>自学任务也采用相同规则。</li>
 <li>CLI 与 GUI 均已同步。</li>
 </ul>

@@ -30,8 +30,8 @@ def task_type_of(task: dict[str, Any]) -> int:
 
 
 def class_task_kind(task: dict[str, Any]) -> str:
-    """班级任务内部类型：1=测试，2=学习。"""
-    return "test" if task_type_of(task) == 1 else "learning" if task_type_of(task) == 2 else "unknown"
+    """班级任务内部类型：1=学习，2=测试。"""
+    return "learning" if task_type_of(task) == 1 else "test" if task_type_of(task) == 2 else "unknown"
 
 
 def class_task_is_repeatable(task: dict[str, Any]) -> bool:

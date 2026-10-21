@@ -20,6 +20,7 @@ from vocabgo.batch import (  # noqa: E402
     rounds_for_task,
     score_of,
 )
+from vocabgo.client import VocabgoError  # noqa: E402
 from vocabgo.gui import VocabgoApp  # noqa: E402
 
 
@@ -33,17 +34,18 @@ class BatchTaskFilterTest(unittest.TestCase):
         records = [
             {"task_id": -1, "task_type": 1, "progress": 0, "score": 0},
             {"task_id": 1, "task_type": 1, "progress": 87, "score": 100},
-            {"task_id": 2, "task_type": 2, "progress": 100, "score": 66.6},
+            {"task_id": 2, "task_type": 1, "progress": 100, "score": 66.6},
+            {"task_id": 3, "task_type": 2, "progress": 100, "score": 66.6},
         ]
         self.assertEqual(
             pending_class_tasks(records, 10),
             [records[1]],
-            "进度100%的班级任务即使得分低也不能重新加入",
+            "默认只处理进度未满的班级任务",
         )
         self.assertEqual(
             pending_class_tasks(records, 10, include_completed=True),
             [records[1], records[2]],
-            "显式允许重刷学习任务时才包含进度100%的班级学习任务",
+            "显式允许重刷时才包含进度100%的班级学习任务，测试任务始终跳过",
         )
 
     def test_pending_study_keeps_uncreated_task(self) -> None:
@@ -55,10 +57,10 @@ class BatchTaskFilterTest(unittest.TestCase):
         self.assertEqual(pending_study_tasks(records, 10), records[:2])
 
     def test_task_kind_and_rounds(self) -> None:
-        test_task = {"task_type": 1}
-        learning_task = {"task_type": 2}
-        self.assertEqual(class_task_kind(test_task), "test")
+        learning_task = {"task_type": 1}
+        test_task = {"task_type": 2}
         self.assertEqual(class_task_kind(learning_task), "learning")
+        self.assertEqual(class_task_kind(test_task), "test")
         self.assertEqual(
             rounds_for_task("class", test_task, class_rounds=8, study_rounds=3), 1
         )
@@ -177,7 +179,7 @@ class BatchOrchestrationTest(unittest.TestCase):
         app.cancel = threading.Event()
         app.var_max_score = Var("10")
         app.var_repeat_completed = Var(False)
-        app.var_class_loop = Var("3")
+        app.var_class_loop = Var("1")
         app.log = lambda _message: None
         app.ui = lambda *_args, **_kwargs: None
         app._refresh_status = lambda: None
@@ -276,6 +278,76 @@ class BatchOrchestrationTest(unittest.TestCase):
             "首次开始可重置，自动续答不能再次重置",
         )
         self.assertEqual(solver.runs, 2)
+
+    def test_class_task_retries_with_reset_on_little_task_error(self) -> None:
+        class FakeClient:
+            def __init__(self):
+                self.submits = 0
+                self.reset_flags = []
+
+            def chose_word_list(self, _task_id):
+                return {
+                    "data": {
+                        "word_list": [
+                            {
+                                "word": "folk",
+                                "score": 6.6,
+                                "course_id": "CET4_v2",
+                                "list_id": "CET4_v2_19",
+                            }
+                        ]
+                    }
+                }
+
+            def submit_chose_word(self, _task_id, _word_map, **kwargs):
+                self.submits += 1
+                reset = bool(kwargs.get("reset_chose_words"))
+                self.reset_flags.append(reset)
+                if self.submits == 1:
+                    raise VocabgoError("接口报错 code=0 msg=对不起，存在小节任务未完成，请先完成小节任务")
+                return {"data": {}}
+
+            def task_info(self, _task_id, _release_id):
+                return {"data": {"progress": 87, "exist_little_task": 1, "task_type": 2}}
+
+        class FakeSolver:
+            kind = "class"
+
+            def run(self, **_kwargs):
+                return SimpleNamespace(cancelled=False)
+
+        class FakeBank:
+            def __len__(self):
+                return 1
+
+            def cover_count(self, _names):
+                return 1
+
+        app = object.__new__(VocabgoApp)
+        app.cancel = threading.Event()
+        logs: list[str] = []
+        app.log = logs.append
+        app.ui = lambda *_args, **_kwargs: None
+        client = FakeClient()
+        chosen = {
+            "task_id": 1,
+            "release_id": 2,
+            "task_name": "List 19",
+            "task_type": 2,
+            "progress": 87,
+        }
+        with patch("vocabgo.gui.time.sleep", return_value=None):
+            app._run_once(  # noqa: SLF001
+                client,
+                FakeSolver(),
+                chosen,
+                "class",
+                {"study": {}},
+                10,
+                FakeBank(),
+            )
+        self.assertEqual(client.reset_flags, [False, True])
+        self.assertTrue(any("自动重置选词后重试" in line for line in logs))
 
 
 if __name__ == "__main__":
