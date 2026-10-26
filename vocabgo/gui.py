@@ -1484,6 +1484,9 @@ class VocabgoApp:
             words = (
                 client.study_chose_word_list(task_id, course_id, list_id, task_type=task_type, grade=grade).get("data") or {}
             ).get("word_list") or []
+            set_vocabulary = getattr(solver, "set_vocabulary", None)
+            if callable(set_vocabulary):
+                set_vocabulary(str(item.get("word") or "") for item in words)
             word_map = select_words(words, max_score=max_score)
             if not word_map:
                 # 所有词都满分了：此时再调 StartAnswer 会被服务端回「20001 需要选词！」，
@@ -1541,6 +1544,9 @@ class VocabgoApp:
 
         # 班级任务只有一次机会 —— 开跑前先把题库覆盖率摆出来，不够就别硬上
         names = [str(w.get("word") or "") for w in words if w.get("word")]
+        set_vocabulary = getattr(solver, "set_vocabulary", None)
+        if callable(set_vocabulary):
+            set_vocabulary(names)
         covered = bank.cover_count(names)
         if names:
             pct = covered * 100 // len(names)
@@ -1562,6 +1568,9 @@ class VocabgoApp:
                 break
             if session > 1:
                 words = (client.chose_word_list(task_id).get("data") or {}).get("word_list") or []
+                names = [str(w.get("word") or "") for w in words if w.get("word")]
+                if callable(set_vocabulary):
+                    set_vocabulary(names)
             word_map = select_words(words, max_score=max_score)
             if not word_map:
                 self.log(f"✅ 这条任务 {len(words)} 个词都已达标（≥{max_score} 分），不用再练了")

@@ -34,8 +34,19 @@ class _FakeLlm:
         self.calls.append(("phrase", str(thinking), votes))
         return self.phrase_results.pop(0) if self.phrase_results else None
 
-    def ask_fill(self, _topic, _defs, _hint="", material_hint="", *, votes=1, thinking=None):
+    def ask_fill(
+        self,
+        _topic,
+        _defs,
+        _hint="",
+        material_hint="",
+        *,
+        fill_candidates="",
+        votes=1,
+        thinking=None,
+    ):
         del material_hint
+        del fill_candidates
         self.calls.append(("fill", str(thinking), votes))
         return None
 

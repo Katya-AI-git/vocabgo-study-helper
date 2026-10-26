@@ -21,12 +21,14 @@ answer_corrects，于是可以「用正确答案再判一次 → answer_result=1
 
 from __future__ import annotations
 
+import json
 import random
 import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from pathlib import Path
+from typing import Any, Callable, Iterable
 
 from .bank import Bank
 from .client import VocabgoClient, join_phrase
@@ -46,6 +48,8 @@ from .matcher import (
     topic_key_loose,
     topic_mode,
     topic_options,
+    topic_remark,
+    topic_stem,
 )
 
 WRONG_SENTINEL = ""  # 试答案用的「明显错误」作答
@@ -126,6 +130,8 @@ class Solver:
         reader: ImageReader | None = None,
         glossary: Glossary | None = None,
         materials: MaterialLibrary | None = None,
+        vocabulary: Iterable[str] | None = None,
+        fill_fail_path: str | Path | None = None,
         probe: bool = True,
         probe_attempts: int = 2,
         llm_votes: int = 1,
@@ -142,6 +148,13 @@ class Solver:
         self.reader = reader
         self.glossary = glossary  # 在线词典 / 本地词库，用来把「凭记忆」变成「查得到」
         self.materials = materials  # 用户上传的词表、教材和电子书
+        self.vocabulary: set[str] = set()
+        self.fill_fail_path = (
+            Path(fill_fail_path)
+            if fill_fail_path
+            else self.bank.path.parent / "failed_fill.jsonl"
+        )
+        self.set_vocabulary(vocabulary or ())
         self.probe_enabled = probe
         self.probe_attempts = probe_attempts
         self.llm_votes = max(1, int(llm_votes))
@@ -152,6 +165,15 @@ class Solver:
         self.log = logger
         self.word_defs: dict[str, list[str]] = {}
         self.stats = Stats()
+
+    def set_vocabulary(self, words: Iterable[str]) -> None:
+        """设置当前任务词表；只用于填空候选筛选，不会把整表塞进提示词。"""
+        cleaned: set[str] = set()
+        for item in words:
+            for token in re.findall(r"[A-Za-z][A-Za-z'-]*", str(item or "").lower()):
+                if token:
+                    cleaned.add(token)
+        self.vocabulary = cleaned
 
     # ── 对外入口 ──
     def run(
@@ -173,7 +195,8 @@ class Solver:
         self.stats.total = int(data.get("topic_total") or 0)
         self.stats.done = int(data.get("topic_done_num") or 0)
         self.log(
-            f"🚀 开始本会话作答：{self.stats.done}/{self.stats.total}，题库 {len(self.bank)} 条"
+            f"🚀 开始本会话作答：{self.stats.done}/{self.stats.total}，"
+            f"题库 {len(self.bank)} 条，填空约束 v3"
         )
 
         guard = 0
@@ -333,14 +356,16 @@ class Solver:
             )
             guess = self._ask_llm(topic, mode, hint, material_hint)
             if guess is not None:
-                code, ok, _ = self._answer(topic, code, guess)
+                code, ok, answer_data = self._answer(topic, code, guess)
                 if ok:
                     self.stats.llm += 1
                     self.bank.put(key, guess, display_stem(topic))
                     self.log(f"  🤖 {stem} → {display_answer(topic, guess)} {source_label('llm')}")
                     return self._submit(code, mode)
+                self._record_fill_failure(topic, mode, "server_rejected", guess, answer_data)
                 self.log(f"  ⚠️ {stem} → 大模型答案未通过校验，进入兜底")
             else:
+                self._record_fill_failure(topic, mode, "no_consensus", None)
                 self.log(f"  ⚠️ {stem} → 大模型未给出稳定答案，进入兜底")
 
         if self.llm and self.llm.auth_failed:
@@ -400,7 +425,13 @@ class Solver:
             if mode == 32:
                 return self.llm.ask_phrase(topic, self.word_defs, hint, **kwargs)
             if not topic_options(topic) and mode not in (0, 32):
-                return self.llm.ask_fill(topic, self.word_defs, hint, **kwargs)
+                return self.llm.ask_fill(
+                    topic,
+                    self.word_defs,
+                    hint,
+                    fill_candidates=self._fill_candidate_hint(topic),
+                    **kwargs,
+                )
             return self.llm.ask_choice(topic, self.word_defs, hint, **kwargs)
 
         if not self.adaptive_thinking:
@@ -427,6 +458,154 @@ class Solver:
             if guess is not None:
                 self.stats.thinking_on += 1
         return guess
+
+    @staticmethod
+    def _phrase_tokens(text: Any) -> list[str]:
+        return [
+            token.lower()
+            for token in re.findall(r"[A-Za-z][A-Za-z'-]*", str(text or ""))
+        ]
+
+    @classmethod
+    def _slot_candidate(cls, stem: str, candidate: str) -> str:
+        """从「in batches」这类候选中去掉题干固定部分，只留空格答案。"""
+        parts = re.split(r"\{\}|_+", str(stem or ""), maxsplit=1)
+        if len(parts) != 2:
+            return ""
+        before = cls._phrase_tokens(parts[0])
+        after = cls._phrase_tokens(parts[1])
+        tokens = cls._phrase_tokens(candidate)
+        if not tokens:
+            return ""
+
+        start, end = 0, len(tokens)
+        for fixed in before:
+            if start < end and tokens[start] == fixed:
+                start += 1
+            else:
+                break
+        for fixed in reversed(after):
+            if end > start and tokens[end - 1] == fixed:
+                end -= 1
+            else:
+                break
+
+        slot = tokens[start:end]
+        if not 1 <= len(slot) <= 6:
+            return ""
+        return " ".join(slot)
+
+    @staticmethod
+    def _word_variants(token: str) -> set[str]:
+        """给任务词表做轻量词形兼容，不改变最终提交内容。"""
+        value = str(token or "").lower()
+        variants = {value}
+        if value.endswith("ies") and len(value) > 3:
+            variants.add(value[:-3] + "y")
+        if value.endswith("es") and len(value) > 2:
+            variants.add(value[:-2])
+        if value.endswith("s") and len(value) > 1:
+            variants.add(value[:-1])
+        if value.endswith("ed") and len(value) > 3:
+            variants.add(value[:-2])
+            variants.add(value[:-1])
+        if value.endswith("ing") and len(value) > 4:
+            variants.add(value[:-3])
+            variants.add(value[:-3] + "e")
+        return variants
+
+    def _matches_vocabulary(self, token: str) -> bool:
+        if not self.vocabulary:
+            return True
+        return bool(self._word_variants(token) & self.vocabulary)
+
+    def _fill_candidate_hint(self, topic: dict[str, Any]) -> str:
+        """把任务词表和少量翻译候选交给模型，避免自由生成同义词。"""
+        stem = topic_stem(topic)
+        remark = topic_remark(topic)
+        raw: list[str] = []
+        if self.glossary and self.glossary.enabled and remark:
+            raw.extend(self.glossary.translate_to_english(str(remark)))
+
+        # 之前见过且释义明确包含当前中文含义的词，也可以作为候选。
+        for word, defs in self.word_defs.items():
+            if remark and any(str(remark) in str(item) for item in defs):
+                raw.append(word)
+
+        candidates: list[str] = []
+        for item in raw:
+            slot = self._slot_candidate(stem, item)
+            if not slot:
+                continue
+            tokens = slot.split()
+            if self.vocabulary and not any(self._matches_vocabulary(token) for token in tokens):
+                continue
+            if slot not in candidates:
+                candidates.append(slot)
+            if len(candidates) >= 12:
+                break
+
+        blocks: list[str] = []
+        if self.vocabulary:
+            words = sorted(self.vocabulary)[:200]
+            blocks.append(
+                "当前任务词表（只能从下列单词中选一个，禁止同义词）:\n"
+                + ", ".join(words)
+            )
+        if candidates:
+            blocks.append(
+                "中文翻译候选（只作辅助，若与任务词表冲突以任务词表为准）:\n"
+                + "\n".join(f"{index}. {item}" for index, item in enumerate(candidates))
+            )
+        return "\n\n".join(blocks)
+
+    def _record_fill_failure(
+        self,
+        topic: dict[str, Any],
+        mode: int,
+        reason: str,
+        predicted: Any,
+        server_data: dict[str, Any] | None = None,
+    ) -> None:
+        """把无选项填空题的失败样本落盘，方便离线复现和补充资料。"""
+        if mode == 0 or mode == 32 or topic_options(topic):
+            return
+        samples = []
+        for item in getattr(self.llm, "last_fill_samples", []) or []:
+            if not isinstance(item, dict):
+                continue
+            samples.append(
+                {
+                    "sample": item.get("sample"),
+                    "raw": str(item.get("raw") or "")[:500],
+                    "parsed": item.get("parsed"),
+                }
+            )
+        data = server_data or {}
+        record = {
+            "ts": int(time.time()),
+            "mode": mode,
+            "prompt_version": 3,
+            "topic_code": str(topic.get("topic_code") or ""),
+            "stem": topic_stem(topic),
+            "remark": topic_remark(topic),
+            "vocabulary": sorted(self.vocabulary)[:200],
+            "candidates": self._fill_candidate_hint(topic)[:4000],
+            "predicted": predicted,
+            "reason": reason,
+            "samples": samples,
+            "server": {
+                key: data.get(key)
+                for key in ("answer_result", "answer_corrects", "over_status", "msg")
+                if key in data
+            },
+        }
+        try:
+            self.fill_fail_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.fill_fail_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            self.log(f"  ⚠️ 失败样本写入失败：{type(exc).__name__}: {exc}")
 
     def _solve_by_glossary(self, topic: dict[str, Any], mode: int) -> dict[str, Any] | None:
         """查词典定答案：题干里的词 → 在线词典/本地词库的中文释义 → 匹配选项。
@@ -720,16 +899,32 @@ class Solver:
             options = topic_options(topic)
             contents = [str(o.get("content") or "").strip() for o in options if o.get("content")]
             slots = len(re.findall(r"_+", str(topic.get("stem", {}).get("content") or "")))
-            if slots and slots < len(contents):
+            if slots:
                 first_words = {
                     "a", "an", "the", "in", "on", "at", "for", "with",
                     "by", "from", "to", "of", "under", "over",
                 }
+                last_words = {
+                    "sb", "sb.", "sth", "sth.", "somebody", "someone",
+                    "something", "oneself",
+                }
                 contents = sorted(
                     contents,
-                    key=lambda item: (0 if item.lower() in first_words else 1, len(item), item.lower()),
+                    key=lambda item: (
+                        2 if item.lower() in last_words else
+                        0 if item.lower() in first_words else
+                        1,
+                        len(item),
+                        item.lower(),
+                    ),
                 )[:slots]
-                contents.sort(key=lambda item: 0 if item.lower() in first_words else 1)
+                contents.sort(
+                    key=lambda item: (
+                        2 if item.lower() in last_words else
+                        0 if item.lower() in first_words else
+                        1
+                    )
+                )
             return ",".join(contents)
         options = topic_options(topic)
         return options[0].get("answer_tag", 0) if options else 0

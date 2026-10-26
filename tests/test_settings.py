@@ -355,11 +355,41 @@ class LlmHelperTest(unittest.TestCase):
                 "漏掉的冠词应自动补齐",
             )
 
+        abbreviation_topic = {
+            "topic_mode": 32,
+            "stem": {"content": "___ ___", "remark": "引用某人的话"},
+            "options": [{"content": "quote"}, {"content": "sb."}],
+        }
+        with patch.object(LlmHelper, "_chat", return_value="quote sb."):
+            self.assertEqual(
+                helper.ask_phrase(abbreviation_topic, {}, votes=3),
+                "quote,sb.",
+                "sb./sth. 这类选项不应因为句点而解析失败",
+            )
+        with patch.object(LlmHelper, "_chat", return_value="quote somebody"):
+            self.assertEqual(
+                helper.ask_phrase(abbreviation_topic, {}, votes=3),
+                "quote,sb.",
+                "somebody 应能归一成 sb.",
+            )
+
+        long_form_topic = {
+            "topic_mode": 32,
+            "stem": {"content": "___ ___", "remark": "引用某人的话"},
+            "options": [{"content": "quote"}, {"content": "someone"}],
+        }
+        with patch.object(LlmHelper, "_chat", return_value="quote sb."):
+            self.assertEqual(
+                helper.ask_phrase(long_form_topic, {}, votes=3),
+                "quote,someone",
+                "选项使用 someone 时，sb. 也应能匹配",
+            )
+
     def test_ask_fill_uses_final_english_line_and_majority(self) -> None:
         helper = LlmHelper(url="https://x", key="k", model="m", logger=lambda _m: None)
         topic = {
             "topic_mode": 51,
-            "stem": {"content": "plain {}", "remark": "平民百姓"},
+            "stem": {"content": "{}", "remark": "平民百姓"},
             "options": [],
         }
         with patch.object(

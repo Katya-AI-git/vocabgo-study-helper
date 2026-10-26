@@ -129,6 +129,7 @@ class LlmHelper:
         self.timeout = timeout
         self.log = logger
         self.auth_failed = False
+        self.last_fill_samples: list[dict[str, Any]] = []
         self.usage = {
             "prompt_cache_hit_tokens": 0,
             "prompt_cache_miss_tokens": 0,
@@ -378,6 +379,19 @@ class LlmHelper:
         }
         if not pool:
             return None
+
+        def canonical_phrase_key(value: str) -> str:
+            key = str(value or "").strip(".,!?;:").lower()
+            return {
+                "somebody": "sb",
+                "someone": "sb",
+                "something": "sth",
+            }.get(key, key)
+
+        pool_by_key: dict[str, str] = {}
+        for item in pool:
+            key = canonical_phrase_key(item)
+            pool_by_key.setdefault(key, item)
         stem = topic_stem(topic)
         slots = len(re.findall(r"_+", stem))
         raw_tokens = [
@@ -388,16 +402,18 @@ class LlmHelper:
             return None
 
         def pool_token(token: str) -> str | None:
-            if token in pool:
-                return token
-            variants = [token]
-            if token.endswith("ies"):
-                variants.append(token[:-3] + "y")
-            if token.endswith("es"):
-                variants.append(token[:-2])
-            if token.endswith("s"):
-                variants.append(token[:-1])
-            return next((item for item in variants if item in pool), None)
+            key = canonical_phrase_key(token)
+            variants = [key]
+            if key.endswith("ies"):
+                variants.append(key[:-3] + "y")
+            if key.endswith("es"):
+                variants.append(key[:-2])
+            if key.endswith("s"):
+                variants.append(key[:-1])
+            for variant in variants:
+                if variant in pool_by_key:
+                    return pool_by_key[variant]
+            return None
 
         tokens = [pool_token(token) for token in raw_tokens]
         if any(token is None for token in tokens):
@@ -446,7 +462,7 @@ class LlmHelper:
         return self._consensus(answers, wanted)
 
     @staticmethod
-    def _parse_fill(text: str) -> str | None:
+    def _parse_fill(text: str, topic: dict[str, Any] | None = None) -> str | None:
         """解析无选项填空题答案：只接受 1 到 6 个英文词。"""
         value = str(text or "").strip().strip("`\"'。.!！")
         lines = [line.strip().strip("`\"'。.!！") for line in value.splitlines() if line.strip()]
@@ -458,6 +474,28 @@ class LlmHelper:
         tokens = candidate.split()
         if not 1 <= len(tokens) <= 6:
             return None
+
+        # 模型有时会把固定搭配整段抄回来；只提交空格中的部分。
+        if topic:
+            stem = str((topic.get("stem") or {}).get("content") or "")
+            parts = re.split(r"\{\}|_+", stem, maxsplit=1)
+            if len(parts) == 2:
+                before = re.findall(r"[A-Za-z][A-Za-z'-]*", parts[0].lower())
+                after = re.findall(r"[A-Za-z][A-Za-z'-]*", parts[1].lower())
+                start, end = 0, len(tokens)
+                for fixed in before:
+                    if start < end and tokens[start].lower() == fixed:
+                        start += 1
+                    else:
+                        break
+                for fixed in reversed(after):
+                    if end > start and tokens[end - 1].lower() == fixed:
+                        end -= 1
+                    else:
+                        break
+                tokens = tokens[start:end]
+                if not 1 <= len(tokens) <= 6:
+                    return None
         return " ".join(token.lower() for token in tokens)
 
     def ask_fill(
@@ -467,12 +505,21 @@ class LlmHelper:
         hint: str = "",
         material_hint: str = "",
         *,
+        fill_candidates: str = "",
         votes: int = 1,
         thinking: str | None = None,
     ) -> str | None:
         """mode=51 无选项填空题：独立作答并投票。"""
         answers: list[str] = []
-        prompt = self.build_prompt(topic, word_defs, hint, material_hint)
+        trace: list[dict[str, Any]] = []
+        prompt = self.build_prompt(
+            topic,
+            word_defs,
+            hint,
+            material_hint,
+            fill_candidates=fill_candidates,
+            include_word_defs=False,
+        )
         wanted = max(1, int(votes))
         max_samples = wanted if wanted == 1 else wanted + 2
         for sample_index in range(1, max_samples + 1):
@@ -484,13 +531,23 @@ class LlmHelper:
                 sample_index=sample_index,
                 thinking=thinking,
             )
-            parsed = self._parse_fill(text or "")
+            parsed = self._parse_fill(text or "", topic)
+            trace.append(
+                {
+                    "sample": sample_index,
+                    "raw": text or "",
+                    "parsed": parsed,
+                }
+            )
             if parsed:
                 answers.append(parsed)
                 result = self._consensus(answers, wanted)
                 if result is not None:
+                    self.last_fill_samples = trace
                     return result
-        return self._consensus(answers, wanted)
+        result = self._consensus(answers, wanted)
+        self.last_fill_samples = trace
+        return result
 
     def ask_topic(
         self,
@@ -500,6 +557,7 @@ class LlmHelper:
         material_hint: str = "",
         *,
         mode: int,
+        fill_candidates: str = "",
         votes: int = 1,
         thinking: str | None = None,
     ) -> Any | None:
@@ -519,6 +577,7 @@ class LlmHelper:
                 word_defs,
                 hint,
                 material_hint,
+                fill_candidates=fill_candidates,
                 votes=votes,
                 thinking=thinking,
             )
@@ -602,6 +661,9 @@ class LlmHelper:
         word_defs: dict[str, list[str]],
         hint: str = "",
         material_hint: str = "",
+        *,
+        fill_candidates: str = "",
+        include_word_defs: bool = True,
     ) -> str:
         mode = topic_mode(topic)
         stem = topic_stem(topic)
@@ -613,7 +675,7 @@ class LlmHelper:
         # 在线词典/本地词库查到的释义优先采信 —— 比模型凭记忆靠谱
         if hint.strip():
             glossary += f"权威词典释义（与被考单词匹配的优先采信）: {hint.strip()}\n\n"
-        if word_defs:
+        if include_word_defs and word_defs:
             lines = [f"  {w}: {'; '.join(ds)}" for w, ds in list(word_defs.items())[:40]]
             glossary += "已知单词释义:\n" + "\n".join(lines) + "\n\n"
         materials = ""
@@ -631,10 +693,20 @@ class LlmHelper:
             )
         if not options and mode not in (0, 32):
             reference = f"中文含义: {remark}\n" if remark else ""
+            candidates = ""
+            if fill_candidates.strip():
+                candidates = (
+                    "当前任务词表与相关候选"
+                    "（答案只能从任务词表中选择一个单词，禁止同义词）:\n"
+                    f"{fill_candidates.strip()[:2000]}\n\n"
+                )
             return (
-                f"{glossary}{materials}题目: 根据句意和中文含义，填写 {{}} 中缺少的英语单词或短语\n"
+                f"{glossary}{materials}{candidates}"
+                "题目: 根据句意和中文含义，填写 {} 中缺少的英语单词或短语\n"
                 f"句子: {stem}\n{reference}\n"
-                "只输出应填入的英文内容，不要输出序号、引号或解释。"
+                "只输出应填入的英文内容，优先且尽量只使用任务词表中的词，"
+                "保持题目要求的单复数、时态和固定搭配，"
+                "不要输出序号、引号或解释。"
             )
         if mode == 31:
             return (
