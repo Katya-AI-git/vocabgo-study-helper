@@ -31,6 +31,7 @@ li { margin:5px 0; }
 </header>
 <main><article id="quick"><h2>快速上手</h2><p>V4 新增：</p>
 <p>1. 当前任务词表约束填空题 2. `sb./sth.` 等短语占位词归一 3. 填空题失败样本记录</p>
+<p>V1.0.3 新增：内部版本统一、GitHub 新版本检测，可选择前往更新或忽略该版本。</p>
 <p>V3 在 V2 基础上新增：</p>
 <p>1. 本地资料库 2. 自适应思考模式 3. 文字型 PDF、DOCX、EPUB 教材导入 4. 用 pypdf 解析 PDF</p>
 <p>本地资料库：</p>
@@ -142,8 +143,13 @@ li { margin:5px 0; }
 <li><code>mode=51</code> 填空题优先从当前任务词表中选择答案，减少同义词和词形不一致。</li>
 <li>中文含义会先翻译成英文候选，再去掉题干中的固定部分，例如 <code>in batches</code> 裁成 <code>batches</code>。</li>
 <li>模型返回完整搭配时，提交前会自动裁剪，只保留空格中的答案。</li>
+<li>服务端返回正确答案时，会兼容空格格式和逗号格式两种短语提交形式。</li>
+<li>测试任务保留全部词，允许部分词超过单词分值上限，用超分补足任务总分。</li>
 <li><code>mode=32</code> 组词题支持 <code>sb.</code>、<code>sb.'s</code>、<code>times'</code>、<code>sth.</code>、<code>somebody</code> 等占位词归一，并修正兜底排序。</li>
 <li>填空题失败时写入 <code>failed_fill.jsonl</code>，记录题干、候选、模型原始输出和服务端返回，便于离线复现。</li>
+<li>服务端 <code>answer_result=2</code> 暂不当作成功，继续按未通过处理，避免错词被误判为完成而无法重刷。</li>
+<li>班级学习任务由“班级学习轮数”控制；测试任务保留最多 6 个内部会话以完成整套题。</li>
+<li>“允许重刷已完成学习任务”的勾选状态会保存；进度 100% 但仍有未满分词时，需要勾选后再刷选中任务。</li>
 <li>保持 <code>deepseek-flash</code> 和原来的三票投票，不额外增加每题的大模型调用次数。</li>
 </ul>
 <h4>本地资料库（V3）</h4>

@@ -51,6 +51,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "class_loop": 3,    # 班级学习任务轮数（测试任务始终只执行一次）
         "kind": "class",    # 上次用的任务类型
         "ocr": True,        # 上次的读图开关
+        "repeat_completed": False, # 是否允许重刷进度100%的学习任务
         "last_task_id": "", # 上次刷的任务，下次自动帮你选中
         "token_saved_at": "", # 令牌是什么时候拿到的（词达人令牌约 6 小时过期，用来提前提醒）
         "probe_on_class": False, # 班级任务是否允许「试答案」。默认关：班级任务只有一次机会，
@@ -65,6 +66,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "glossary_path": "",     # 词库缓存文件，留空 = 跟题库放一起（glossary.json）
         "materials": True,       # 刷题时优先使用用户导入的词表、教材和电子书
         "materials_path": "",    # 资料库目录，留空 = LOCALAPPDATA/VocabgoAuto/materials
+        "check_updates": True,   # 启动后在后台检查 GitHub 新版本
+        "update_checked_at": "", # 上次检查更新时间，避免频繁请求
+        "ignored_update_version": "", # 用户选择忽略的版本标签
     },
 }
 
@@ -106,6 +110,7 @@ RECOMMENDED: dict[str, Any] = {
         "kind": "class",
         "materials": True,
         "adaptive_thinking": True,
+        "check_updates": True,
     },
 }
 # 每一项「为什么这么设」——界面日志与说明书共用，避免两处说法不一致
@@ -120,6 +125,7 @@ RECOMMENDED_NOTES: list[tuple[str, str, str]] = [
     ("练习轮数", "3", "自动重练没满分的词，把分追满"),
     ("满分阈值", "10", "10 分制下的满分线"),
     ("班级安全覆盖线", "85%", "低于该覆盖率时，一键批量会跳过只有一次机会的班级任务"),
+    ("检查更新", "开启", "启动时后台检查 GitHub Release，只提示并打开下载页，不自动覆盖程序"),
 ]
 
 

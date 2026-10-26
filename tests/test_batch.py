@@ -279,6 +279,102 @@ class BatchOrchestrationTest(unittest.TestCase):
         )
         self.assertEqual(solver.runs, 2)
 
+    def test_selected_learning_task_uses_class_loop_for_session_count(self) -> None:
+        class Var:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+        class FakeSolver:
+            kind = "class"
+
+        folder = Path(tempfile.mkdtemp())
+        app = object.__new__(VocabgoApp)
+        app.cancel = threading.Event()
+        app.var_kind = Var("class")
+        app.var_class_loop = Var("3")
+        app.var_loop = Var("3")
+        app.var_max_score = Var("10")
+        app.tasks = [
+            {
+                "task_id": 1,
+                "release_id": 2,
+                "task_name": "学习任务",
+                "task_type": 1,
+                "progress": 50,
+            }
+        ]
+        app.collect_config = lambda: {"runtime": {}}
+        app._client = lambda: object()
+        app._make_solver = lambda *_args, **_kwargs: FakeSolver()
+        app.log = lambda _message: None
+        app.ui = lambda *_args, **_kwargs: None
+        app.progress = SimpleNamespace(configure=lambda **_kwargs: None)
+        limits: list[int] = []
+
+        def run_once(*_args, **kwargs):
+            limits.append(int(kwargs["session_limit"]))
+            return SimpleNamespace(cancelled=False)
+
+        app._run_once = run_once  # type: ignore[method-assign]
+        with (
+            patch("vocabgo.gui.default_bank_path", return_value=folder / "bank.json"),
+            patch("vocabgo.gui.save_settings"),
+        ):
+            app._do_run(0)  # noqa: SLF001
+
+        self.assertEqual(limits, [1, 1, 1], "班级学习任务应由班级学习轮数控制，不再固定 6 会话")
+
+    def test_selected_test_task_keeps_six_internal_sessions(self) -> None:
+        class Var:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+        class FakeSolver:
+            kind = "class"
+
+        folder = Path(tempfile.mkdtemp())
+        app = object.__new__(VocabgoApp)
+        app.cancel = threading.Event()
+        app.var_kind = Var("class")
+        app.var_class_loop = Var("3")
+        app.var_loop = Var("3")
+        app.var_max_score = Var("10")
+        app.tasks = [
+            {
+                "task_id": 1,
+                "release_id": 2,
+                "task_name": "测试任务",
+                "task_type": 2,
+                "progress": 50,
+            }
+        ]
+        app.collect_config = lambda: {"runtime": {}}
+        app._client = lambda: object()
+        app._make_solver = lambda *_args, **_kwargs: FakeSolver()
+        app.log = lambda _message: None
+        app.ui = lambda *_args, **_kwargs: None
+        app.progress = SimpleNamespace(configure=lambda **_kwargs: None)
+        limits: list[int] = []
+
+        def run_once(*_args, **kwargs):
+            limits.append(int(kwargs["session_limit"]))
+            return SimpleNamespace(cancelled=False)
+
+        app._run_once = run_once  # type: ignore[method-assign]
+        with (
+            patch("vocabgo.gui.default_bank_path", return_value=folder / "bank.json"),
+            patch("vocabgo.gui.save_settings"),
+        ):
+            app._do_run(0)  # noqa: SLF001
+
+        self.assertEqual(limits, [6], "测试任务只有一次机会，仍应允许完成整套题的 6 个内部会话")
+
     def test_class_task_retries_with_reset_on_little_task_error(self) -> None:
         class FakeClient:
             def __init__(self):
@@ -308,7 +404,13 @@ class BatchOrchestrationTest(unittest.TestCase):
                 return {"data": {}}
 
             def task_info(self, _task_id, _release_id):
-                return {"data": {"progress": 87, "exist_little_task": 1, "task_type": 2}}
+                return {
+                    "data": {
+                        "progress": 100 if self.submits >= 2 else 87,
+                        "exist_little_task": 1,
+                        "task_type": 2,
+                    }
+                }
 
         class FakeSolver:
             kind = "class"
@@ -348,7 +450,6 @@ class BatchOrchestrationTest(unittest.TestCase):
             )
         self.assertEqual(client.reset_flags, [False, True])
         self.assertTrue(any("自动重置选词后重试" in line for line in logs))
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

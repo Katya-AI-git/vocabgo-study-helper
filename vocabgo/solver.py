@@ -165,6 +165,8 @@ class Solver:
         self.log = logger
         self.word_defs: dict[str, list[str]] = {}
         self.stats = Stats()
+        self.last_accepted_answer: Any = None
+        self.last_fixed_candidate: Any = None
 
     def set_vocabulary(self, words: Iterable[str]) -> None:
         """设置当前任务词表；只用于填空候选筛选，不会把整表塞进提示词。"""
@@ -358,9 +360,10 @@ class Solver:
             if guess is not None:
                 code, ok, answer_data = self._answer(topic, code, guess)
                 if ok:
+                    accepted = self.last_accepted_answer
                     self.stats.llm += 1
-                    self.bank.put(key, guess, display_stem(topic))
-                    self.log(f"  🤖 {stem} → {display_answer(topic, guess)} {source_label('llm')}")
+                    self.bank.put(key, accepted, display_stem(topic))
+                    self.log(f"  🤖 {stem} → {display_answer(topic, accepted)} {source_label('llm')}")
                     return self._submit(code, mode)
                 self._record_fill_failure(topic, mode, "server_rejected", guess, answer_data)
                 self.log(f"  ⚠️ {stem} → 大模型答案未通过校验，进入兜底")
@@ -377,9 +380,10 @@ class Solver:
             if probed is not None:
                 code, ok, data = self._answer(topic, code, probed)
                 if ok:
+                    accepted = self.last_accepted_answer
                     self.stats.probe += 1
-                    self.bank.put(key, probed, display_stem(topic))
-                    self.log(f"  🔎 {stem} → {display_answer(topic, probed)} {source_label('probe')}")
+                    self.bank.put(key, accepted, display_stem(topic))
+                    self.log(f"  🔎 {stem} → {display_answer(topic, accepted)} {source_label('probe')}")
                     return self._submit(code, mode)
                 # 极端情况：服务端自己回吐的答案判不过，直接保存现状
                 self.stats.wrong_saved += 1
@@ -388,6 +392,8 @@ class Solver:
 
         # 5) 盲选
         fallback: Any = self._default_answer(topic)
+        if mode == 32 and self.last_fixed_candidate is not None:
+            fallback = self.last_fixed_candidate
         code, ok, _ = self._answer(topic, code, fallback)
         self.stats.guess += 1
         if not ok:
@@ -799,7 +805,7 @@ class Solver:
                 data = self._verify(code, tag)
                 tried.append(tag)
                 code = str(data.get("topic_code") or code)
-                if data.get("answer_result") == 1:
+                if self._answer_ok(data.get("answer_result")):
                     good.append(tag)
                 good.extend(t for t in (data.get("answer_corrects") or []) if t not in good)
                 if data.get("over_status") == 1:
@@ -815,7 +821,7 @@ class Solver:
                 data = self._verify(code, tag)
                 tried.append(tag)
                 code = str(data.get("topic_code") or code)
-                if data.get("answer_result") == 1:
+                if self._answer_ok(data.get("answer_result")):
                     good.append(tag)
                 good.extend(t for t in (data.get("answer_corrects") or []) if t not in good)
                 if data.get("over_status") == 1:
@@ -865,20 +871,39 @@ class Solver:
     def _answer(self, topic: dict[str, Any], code: str, answer: Any) -> tuple[str, bool, dict[str, Any]]:
         """判一次；错了就看服务端有没有回吐正确答案，再判一次。"""
         answer = self._normalize(topic, answer)
+        self.last_accepted_answer = answer
+        self.last_fixed_candidate = None
         data = self._verify(code, answer)
         code = str(data.get("topic_code") or code)
-        if data.get("answer_result") == 1:
+        if self._answer_ok(data.get("answer_result")):
             return code, True, data
 
         corrects = data.get("answer_corrects") or []
         if corrects:
-            fixed = self._normalize(topic, corrects[0])
-            data2 = self._verify(code, fixed)
-            code2 = str(data2.get("topic_code") or code)
-            if data2.get("answer_result") == 1:
-                self.stats.fixed += 1
-                return code2, True, data2
+            candidates: list[Any] = []
+            for correct in corrects:
+                for fixed in (
+                    correct,
+                    str(correct).strip(),
+                    self._normalize(topic, correct),
+                ):
+                    if fixed not in candidates:
+                        candidates.append(fixed)
+            if candidates:
+                self.last_fixed_candidate = candidates[0]
+            for fixed in candidates:
+                data2 = self._verify(code, fixed)
+                code = str(data2.get("topic_code") or code)
+                if self._answer_ok(data2.get("answer_result")):
+                    self.stats.fixed += 1
+                    self.last_accepted_answer = fixed
+                    return code, True, data2
         return code, False, data
+
+    @staticmethod
+    def _answer_ok(value: Any) -> bool:
+        """1=明确正确；2 暂按未通过处理，避免错误题被误判为已完成。"""
+        return value == 1
 
     def _probe(self, topic: dict[str, Any], code: str) -> tuple[str, Any | None]:
         """连续提交错误答案，把本题的正确答案从服务端套出来。"""
@@ -952,14 +977,31 @@ def pick_task(records: list[dict[str, Any]], index: int = 0) -> dict[str, Any]:
 
 def select_words(words: list[dict[str, Any]], max_score: int = 10) -> dict[str, list[str]]:
     """按「未满分的词」构造 word_map，交给 SubmitChoseWord 重置进度。"""
-    word_map: dict[str, list[str]] = {}
+    # 单词满分可能超过 10：目标分按当前任务观察到的最高分自适应，10 只作为最低基线。
+    scores: list[float] = []
     for item in words:
         try:
-            score = float(item.get("score") or 0)
+            scores.append(float(item.get("score") or 0))
         except (TypeError, ValueError):
-            score = 0
-        if score >= max_score:
+            scores.append(0.0)
+    observed_max = max(scores, default=0.0)
+    threshold = max(10.0, observed_max)
+    word_map: dict[str, list[str]] = {}
+    for item, score in zip(words, scores):
+        if score >= threshold:
             continue
         key = f"{item.get('course_id')}:{item.get('list_id')}"
         word_map.setdefault(key, []).append(str(item.get("word") or ""))
+    return word_map
+
+
+def select_all_words(words: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """测试任务保留全部词，允许部分词超分补足任务总分。"""
+    word_map: dict[str, list[str]] = {}
+    for item in words:
+        word = str(item.get("word") or "").strip()
+        if not word:
+            continue
+        key = f"{item.get('course_id')}:{item.get('list_id')}"
+        word_map.setdefault(key, []).append(word)
     return word_map

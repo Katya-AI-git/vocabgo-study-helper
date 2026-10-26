@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mock_server import serve  # noqa: E402
 from vocabgo.bank import Bank  # noqa: E402
 from vocabgo.client import VocabgoClient, VocabgoError  # noqa: E402
-from vocabgo.solver import Solver, select_words  # noqa: E402
+from vocabgo.solver import Solver, select_all_words, select_words  # noqa: E402
 
 
 class StubReader:
@@ -165,6 +165,40 @@ class SelectWordsTest(unittest.TestCase):
         ]
         picked = select_words(words, max_score=10)
         self.assertEqual(picked["c:l"], ["a", "b", "c"], "解析不了的分数按 0 处理，别漏词")
+
+    def test_high_configured_threshold_does_not_skip_partial_words(self) -> None:
+        words = [
+            {"word": "full", "score": 10, "course_id": "c", "list_id": "l"},
+            {"word": "partial", "score": 7.5, "course_id": "c", "list_id": "l"},
+        ]
+        self.assertEqual(
+            select_words(words, max_score=100),
+            {"c:l": ["partial"]},
+            "配置误填 100 时不能把 10 分制单词全部当成未满分",
+        )
+
+    def test_word_goal_follows_observed_task_maximum(self) -> None:
+        words = [
+            {"word": "full", "score": 12, "course_id": "c", "list_id": "l"},
+            {"word": "near", "score": 11, "course_id": "c", "list_id": "l"},
+            {"word": "low", "score": 7.5, "course_id": "c", "list_id": "l"},
+        ]
+        self.assertEqual(
+            select_words(words, max_score=10),
+            {"c:l": ["near", "low"]},
+            "单词满分超过 10 时，应按任务观察到的最高分作为目标",
+        )
+
+    def test_test_task_keeps_all_words_for_overage_compensation(self) -> None:
+        words = [
+            {"word": "full", "score": 10, "course_id": "c", "list_id": "l"},
+            {"word": "low", "score": 7.5, "course_id": "c", "list_id": "l"},
+        ]
+        self.assertEqual(
+            select_all_words(words),
+            {"c:l": ["full", "low"]},
+            "测试任务需要保留全部词，允许部分词超分补足总分",
+        )
 
 
 class SolverE2ETest(unittest.TestCase):

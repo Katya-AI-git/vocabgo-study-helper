@@ -90,6 +90,7 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(config["runtime"]["kind"], "class")
         self.assertTrue(config["runtime"]["ocr"])
         self.assertTrue(config["runtime"]["adaptive_thinking"])
+        self.assertFalse(config["runtime"]["repeat_completed"])
         self.assertEqual(config["runtime"]["last_task_id"], "")
 
         config["runtime"]["loop"] = 5
@@ -97,6 +98,7 @@ class SettingsTest(unittest.TestCase):
         config["runtime"]["kind"] = "study"
         config["runtime"]["ocr"] = False
         config["runtime"]["adaptive_thinking"] = False
+        config["runtime"]["repeat_completed"] = True
         config["runtime"]["last_task_id"] = "95201087"
         save_settings(config, self.tmp)
 
@@ -106,6 +108,7 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(again["runtime"]["kind"], "study")
         self.assertFalse(again["runtime"]["ocr"])
         self.assertFalse(again["runtime"]["adaptive_thinking"])
+        self.assertTrue(again["runtime"]["repeat_completed"])
         self.assertEqual(again["runtime"]["last_task_id"], "95201087")
 
     def test_missing_auth_fields(self) -> None:
@@ -502,6 +505,7 @@ class RecommendedConfigTest(unittest.TestCase):
         "练习轮数": ("runtime", "loop"),
         "满分阈值": ("runtime", "max_score"),
         "班级安全覆盖线": ("runtime", "class_min_coverage"),
+        "检查更新": ("runtime", "check_updates"),
     }
 
     def test_notes_cover_every_recommended_field(self) -> None:

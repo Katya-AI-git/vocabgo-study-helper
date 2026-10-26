@@ -24,9 +24,9 @@ from .materials import MaterialLibrary
 from .paths import app_dir, config_path, is_frozen, materials_dir
 from .settings import load_settings, resolve_llm, save_settings
 from .solver import Solver, Stats
+from .version import __version__
 from .vision import ImageReader, detect_image, hydrate_topic
 
-__version__ = "2.1.4"
 __all__ = [
     "Bank",
     "ImageReader",
@@ -38,6 +38,7 @@ __all__ = [
     "VERSION",
     "VocabgoClient",
     "VocabgoError",
+    "__version__",
     "app_dir",
     "config_path",
     "decode_jv",

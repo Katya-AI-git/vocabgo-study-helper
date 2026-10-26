@@ -8,11 +8,13 @@
 from __future__ import annotations
 
 import base64
+import datetime
 import os
 import queue
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
@@ -61,7 +63,9 @@ from .settings import (
     save_settings,
     token_saved_at_from_disk,
 )
-from .solver import Solver, select_words
+from .solver import Solver, select_all_words, select_words
+from .updates import ReleaseInfo, check_for_update
+from .version import __version__
 from .vision import (
     VISION_BACKENDS,
     backend_label,
@@ -101,6 +105,8 @@ class VocabgoApp:
             root.after(900, self._auto_fetch_models)  # 已有密钥的话，开界面就自动拉一次模型
         self._autosave_ready = True
         self._announce_network()
+        if self.var_check_updates.get():
+            root.after(1800, self._schedule_update_check)
 
     def _fit_window(self) -> None:
         """让窗口按内容自适应 —— 不手算尺寸，避免不同 DPI 下把右侧控件裁掉。"""
@@ -229,6 +235,7 @@ class VocabgoApp:
             row2,
             text="允许重刷已完成学习任务",
             variable=self.var_repeat_completed,
+            command=lambda: self._autosave("允许重刷已完成学习任务"),
         ).pack(side="left", padx=6)
 
         self.btn_start = ttk.Button(row2, text="▶ 开始刷题", command=self.on_start)
@@ -379,6 +386,13 @@ class VocabgoApp:
             pace_box, text="跟随系统代理", variable=self.var_sys_proxy, command=lambda: self._autosave("代理")
         ).grid(row=3, column=3, sticky="w", padx=6)
         ttk.Label(pace_box, text="留空 = 直连（推荐）", foreground="#52606d").grid(row=3, column=4, sticky="w", padx=8)
+        self.var_check_updates = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            pace_box,
+            text="启动时检查 GitHub 新版本",
+            variable=self.var_check_updates,
+            command=lambda: self._autosave("检查更新"),
+        ).grid(row=4, column=1, columnspan=3, sticky="w", padx=6, pady=(0, 6))
 
         material_box = ttk.LabelFrame(frame, text="本地资料库（词表、教材、电子书）")
         material_box.pack(fill="x", padx=4, pady=6)
@@ -548,11 +562,13 @@ class VocabgoApp:
         self.var_pace_hi.set(str(pace[1]))
         self.var_probe.set(bool(runtime.get("probe", True)))
         self.var_ocr.set(bool(runtime.get("ocr", True)))
+        self.var_repeat_completed.set(bool(runtime.get("repeat_completed", False)))
         self.var_max_score.set(str(runtime.get("max_score") or 10))
         self.var_loop.set(str(runtime.get("loop") or 3))
         self.var_class_loop.set(str(runtime.get("class_loop") or 3))
         self.var_kind.set(str(runtime.get("kind") or "class"))
         self.var_material_enabled.set(bool(runtime.get("materials", True)))
+        self.var_check_updates.set(bool(runtime.get("check_updates", True)))
 
         network = self.config.get("network") or {}
         self.var_proxy.set(str(network.get("proxy") or ""))
@@ -590,8 +606,9 @@ class VocabgoApp:
         runtime["pace"] = [lo, hi]
         runtime["probe"] = bool(self.var_probe.get())
         runtime["ocr"] = bool(self.var_ocr.get())
+        runtime["repeat_completed"] = bool(self.var_repeat_completed.get())
         try:
-            runtime["max_score"] = float(self.var_max_score.get() or 10)
+            runtime["max_score"] = max(1.0, float(self.var_max_score.get() or 10))
             runtime["loop"] = max(1, int(float(self.var_loop.get() or 3)))
             runtime["class_loop"] = max(1, int(float(self.var_class_loop.get() or 3)))
         except ValueError:
@@ -601,6 +618,7 @@ class VocabgoApp:
         runtime["kind"] = self.var_kind.get() or "class"
         runtime["materials"] = bool(self.var_material_enabled.get())
         runtime["adaptive_thinking"] = bool(self.var_adaptive_thinking.get())
+        runtime["check_updates"] = bool(self.var_check_updates.get())
         runtime.setdefault("bank_path", "")
         runtime.setdefault("last_task_id", "")
 
@@ -829,6 +847,52 @@ class VocabgoApp:
                 self.ui(self._busy, False)
 
         return wrapper
+
+    def _schedule_update_check(self) -> None:
+        """后台检查 GitHub 更新，不阻塞登录、拉模型或刷题。"""
+        if not self.var_check_updates.get():
+            return
+        runtime = self.config.setdefault("runtime", {})
+        stamp = str(runtime.get("update_checked_at") or "")
+        if stamp:
+            try:
+                checked = datetime.datetime.fromisoformat(stamp)
+                if (datetime.datetime.now() - checked).total_seconds() < 24 * 3600:
+                    return
+            except ValueError:
+                pass
+        threading.Thread(target=self._check_updates, daemon=True).start()
+
+    def _check_updates(self) -> None:
+        info = check_for_update(__version__)
+        runtime = self.config.setdefault("runtime", {})
+        runtime["update_checked_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        try:
+            save_settings(self.config)
+        except Exception:
+            pass
+        if info is None:
+            return
+        if str(runtime.get("ignored_update_version") or "") == info.tag:
+            return
+        self.ui(self._prompt_update, info)
+
+    def _prompt_update(self, info: ReleaseInfo) -> None:
+        message = (
+            f"发现新版本：{info.tag}\n"
+            f"当前版本：{__version__}\n\n"
+            "选择“是”前往 GitHub 下载更新。\n"
+            "选择“否”忽略这个版本。"
+        )
+        if messagebox.askyesno(APP_TITLE, message):
+            webbrowser.open(info.html_url)
+            return
+        runtime = self.config.setdefault("runtime", {})
+        runtime["ignored_update_version"] = info.tag
+        try:
+            save_settings(self.config)
+        except Exception:
+            pass
 
     # ── 账号操作 ──
     def _client(self) -> VocabgoClient:
@@ -1192,6 +1256,15 @@ class VocabgoApp:
         client = self._client()
         chosen = self.tasks[min(index, len(self.tasks) - 1)]
         kind = self.var_kind.get()
+        if kind == "class" and float(chosen.get("progress") or 0) >= 100:
+            repeatable = class_task_kind(chosen) == "learning"
+            if not repeatable or not self.var_repeat_completed.get():
+                messagebox.showinfo(
+                    APP_TITLE,
+                    "这条任务进度已经是 100%。\n\n"
+                    "学习任务如需重刷，请先勾选“允许重刷已完成学习任务”；测试任务不能重刷。",
+                )
+                return
         rounds = rounds_for_task(
             kind,
             chosen,
@@ -1207,6 +1280,7 @@ class VocabgoApp:
         save_settings(config)
 
         solver = self._make_solver(client, bank, kind, config)
+        session_limit = 6 if kind == "class" and class_task_kind(chosen) == "test" else 1
 
         for round_index in range(rounds):
             if self.cancel.is_set():
@@ -1222,6 +1296,7 @@ class VocabgoApp:
                 max_score,
                 bank,
                 allow_reset=(round_index == 0),
+                session_limit=session_limit,
             )
             if stats is None or stats.cancelled:
                 break
@@ -1306,6 +1381,10 @@ class VocabgoApp:
         bank_file = default_bank_path((config.get("runtime") or {}).get("bank_path") or None)
         bank = Bank(bank_file)
         include_completed = bool(self.var_repeat_completed.get())
+        self.log(
+            "↻ 允许重刷已完成学习任务："
+            + ("是" if include_completed else "否（进度100%的学习任务会跳过）")
+        )
         runnable = pending_class_tasks(tasks, max_score, include_completed=include_completed)
         skipped = len(tasks) - len(runnable)
 
@@ -1336,6 +1415,7 @@ class VocabgoApp:
                 class_rounds=class_rounds,
                 study_rounds=1,
             )
+            session_limit = 6 if class_task_kind(chosen) == "test" else 1
             for round_index in range(rounds):
                 if self.cancel.is_set():
                     break
@@ -1351,6 +1431,7 @@ class VocabgoApp:
                         max_score,
                         bank,
                         allow_reset=(round_index == 0),
+                        session_limit=session_limit,
                     )
                 except Exception as exc:
                     self.log(f"❌ 本条班级任务失败，继续下一条：{exc}")
@@ -1460,6 +1541,7 @@ class VocabgoApp:
         max_score: float,
         bank: Bank,
         allow_reset: bool = True,
+        session_limit: int = 6,
     ):
         if kind == "study":
             course_id = str(chosen.get("course_id") or self.var_course.get() or "CET4_v2")
@@ -1563,7 +1645,8 @@ class VocabgoApp:
             initial_reset = allow_reset and int(initial_info.get("exist_little_task") or 1) == 2
         except Exception:
             initial_reset = False
-        for session in range(1, 7):
+        session_limit = max(1, int(session_limit or 1))
+        for session in range(1, session_limit + 1):
             if self.cancel.is_set():
                 break
             if session > 1:
@@ -1571,13 +1654,17 @@ class VocabgoApp:
                 names = [str(w.get("word") or "") for w in words if w.get("word")]
                 if callable(set_vocabulary):
                     set_vocabulary(names)
-            word_map = select_words(words, max_score=max_score)
+            word_map = (
+                select_all_words(words)
+                if class_task_kind(chosen) == "test"
+                else select_words(words, max_score=max_score)
+            )
             if not word_map:
                 self.log(f"✅ 这条任务 {len(words)} 个词都已达标（≥{max_score} 分），不用再练了")
                 self.ui(self.progress.configure, value=100)
                 break
             self.log(
-                f"📝 第 {session}/6 个答题会话：共 {len(words)} 词，"
+                f"📝 第 {session}/{session_limit} 个答题会话：共 {len(words)} 词，"
                 f"待练 {sum(len(v) for v in word_map.values())} 词"
             )
             reset_now = session == 1 and initial_reset
@@ -1615,7 +1702,7 @@ class VocabgoApp:
                 self.log("⏹️ 本次会话没有提升总进度，停止自动续答，避免重复从头循环")
                 break
             last_progress = progress
-            if session < 6:
+            if session < session_limit:
                 self.log("🔄 任务尚未完成，自动重新选词并继续")
                 time.sleep(1.0)
         try:

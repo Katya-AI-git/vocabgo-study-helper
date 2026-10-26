@@ -19,6 +19,36 @@ class _Client:
     pass
 
 
+class _Verify2Client:
+    def verify(self, code, answer):
+        return {
+            "data": {
+                "answer_result": 2,
+                "over_status": 2,
+                "answer_corrects": [],
+                "topic_code": code,
+            }
+        }
+
+
+class _CorrectsClient:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def verify(self, code, answer):
+        self.calls.append(str(answer))
+        if str(answer) == "orbit the sun":
+            return {"data": {"answer_result": 1, "over_status": 1, "topic_code": code}}
+        return {
+            "data": {
+                "answer_result": 2,
+                "over_status": 1,
+                "answer_corrects": ["orbit the sun　"],
+                "topic_code": code,
+            }
+        }
+
+
 class _FakeLlm:
     enabled = True
     auth_failed = False
@@ -171,6 +201,46 @@ class FillOptimizationTest(unittest.TestCase):
         self.assertEqual(record["mode"], 32)
         self.assertEqual(record["options"], ["violate", "sb.'s", "privacy"])
         self.assertEqual(record["samples"][0]["raw"], "violate sb.'s privacy")
+
+    def test_answer_result_2_is_not_treated_as_success(self) -> None:
+        folder = Path(tempfile.mkdtemp())
+        solver = Solver(
+            _Verify2Client(),  # type: ignore[arg-type]
+            Bank(folder / "bank.json"),
+            probe=False,
+            logger=lambda _message: None,
+        )
+        topic = {
+            "topic_mode": 51,
+            "stem": {"content": "social {}", "remark": "社会习俗"},
+            "options": [],
+        }
+
+        _code, ok, data = solver._answer(topic, "c1", "convention")  # noqa: SLF001
+
+        self.assertFalse(ok, "answer_result=2 不能直接当成正确，否则错词不会继续重刷")
+        self.assertEqual(data["answer_result"], 2)
+
+    def test_answer_corrects_tries_space_format_before_comma_format(self) -> None:
+        folder = Path(tempfile.mkdtemp())
+        client = _CorrectsClient()
+        solver = Solver(
+            client,  # type: ignore[arg-type]
+            Bank(folder / "bank.json"),
+            probe=False,
+            logger=lambda _message: None,
+        )
+        topic = {
+            "topic_mode": 32,
+            "stem": {"content": "_  _  _", "remark": "绕太阳旋转"},
+            "options": [{"content": "sun　"}, {"content": "the"}, {"content": "orbit"}],
+        }
+
+        _code, ok, _data = solver._answer(topic, "c1", "orbit,the,sun")  # noqa: SLF001
+
+        self.assertTrue(ok)
+        self.assertEqual(solver.last_accepted_answer, "orbit the sun")
+        self.assertEqual(client.calls[:2], ["orbit,the,sun", "orbit the sun　"])
 
 
 if __name__ == "__main__":
