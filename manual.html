@@ -142,7 +142,7 @@ li { margin:5px 0; }
 <li><code>mode=51</code> 填空题优先从当前任务词表中选择答案，减少同义词和词形不一致。</li>
 <li>中文含义会先翻译成英文候选，再去掉题干中的固定部分，例如 <code>in batches</code> 裁成 <code>batches</code>。</li>
 <li>模型返回完整搭配时，提交前会自动裁剪，只保留空格中的答案。</li>
-<li><code>mode=32</code> 组词题支持 <code>sb.</code>、<code>sth.</code>、<code>somebody</code> 等占位词归一，并修正兜底排序。</li>
+<li><code>mode=32</code> 组词题支持 <code>sb.</code>、<code>sb.'s</code>、<code>times'</code>、<code>sth.</code>、<code>somebody</code> 等占位词归一，并修正兜底排序。</li>
 <li>填空题失败时写入 <code>failed_fill.jsonl</code>，记录题干、候选、模型原始输出和服务端返回，便于离线复现。</li>
 <li>保持 <code>deepseek-flash</code> 和原来的三票投票，不额外增加每题的大模型调用次数。</li>
 </ul>

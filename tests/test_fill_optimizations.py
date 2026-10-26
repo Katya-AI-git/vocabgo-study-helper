@@ -26,6 +26,9 @@ class _FakeLlm:
         {"sample": 1, "raw": "in batches", "parsed": "batches"},
         {"sample": 2, "raw": "in batches", "parsed": "batches"},
     ]
+    last_phrase_samples = [
+        {"sample": 1, "raw": "violate sb.'s privacy", "parsed": "violate,sb.'s,privacy"},
+    ]
 
 
 def fill_topic() -> dict:
@@ -128,7 +131,7 @@ class FillOptimizationTest(unittest.TestCase):
 
         record = json.loads((folder / "failed_fill.jsonl").read_text(encoding="utf-8").strip())
         self.assertEqual(record["mode"], 51)
-        self.assertEqual(record["prompt_version"], 3)
+        self.assertEqual(record["prompt_version"], 4)
         self.assertEqual(record["predicted"], "batches")
         self.assertEqual(record["reason"], "server_rejected")
         self.assertEqual(record["samples"][0]["raw"], "in batches")
@@ -144,6 +147,30 @@ class FillOptimizationTest(unittest.TestCase):
         }
 
         self.assertEqual(solver._default_answer(topic), "quote,sb.")  # noqa: SLF001
+
+    def test_phrase_failure_records_raw_samples(self) -> None:
+        folder = Path(tempfile.mkdtemp())
+        solver = self.make_solver(folder)
+        solver.llm = _FakeLlm()  # type: ignore[assignment]
+        topic = {
+            "topic_mode": 32,
+            "topic_code": "phrase-1",
+            "stem": {"content": "___ ___ ___", "remark": "侵犯某人的隐私"},
+            "options": [{"content": "violate"}, {"content": "sb.'s"}, {"content": "privacy"}],
+        }
+
+        solver._record_fill_failure(  # noqa: SLF001
+            topic,
+            32,
+            "server_rejected",
+            "violate,sb.'s,privacy",
+            {"answer_result": 2, "over_status": 2},
+        )
+
+        record = json.loads((folder / "failed_fill.jsonl").read_text(encoding="utf-8").strip())
+        self.assertEqual(record["mode"], 32)
+        self.assertEqual(record["options"], ["violate", "sb.'s", "privacy"])
+        self.assertEqual(record["samples"][0]["raw"], "violate sb.'s privacy")
 
 
 if __name__ == "__main__":

@@ -130,6 +130,7 @@ class LlmHelper:
         self.log = logger
         self.auth_failed = False
         self.last_fill_samples: list[dict[str, Any]] = []
+        self.last_phrase_samples: list[dict[str, Any]] = []
         self.usage = {
             "prompt_cache_hit_tokens": 0,
             "prompt_cache_miss_tokens": 0,
@@ -381,11 +382,18 @@ class LlmHelper:
             return None
 
         def canonical_phrase_key(value: str) -> str:
-            key = str(value or "").strip(".,!?;:").lower()
+            key = str(value or "").strip(".,!?;:").lower().replace("’", "'")
             return {
                 "somebody": "sb",
                 "someone": "sb",
                 "something": "sth",
+                "sb.'s": "sb_poss",
+                "sb's": "sb_poss",
+                "somebody's": "sb_poss",
+                "someone's": "sb_poss",
+                "sth.'s": "sth_poss",
+                "sth's": "sth_poss",
+                "something's": "sth_poss",
             }.get(key, key)
 
         pool_by_key: dict[str, str] = {}
@@ -396,7 +404,7 @@ class LlmHelper:
         slots = len(re.findall(r"_+", stem))
         raw_tokens = [
             token.lower()
-            for token in re.findall(r"[A-Za-z][A-Za-z'-]*", str(text or ""))
+            for token in re.findall(r"[A-Za-z][A-Za-z'’.-]*", str(text or ""))
         ]
         if not raw_tokens:
             return None
@@ -441,6 +449,7 @@ class LlmHelper:
     ) -> str | None:
         """组词题：可多次独立作答，按完整短语投票。"""
         answers: list[str] = []
+        trace: list[dict[str, Any]] = []
         prompt = self.build_prompt(topic, word_defs, hint, material_hint)
         wanted = max(1, int(votes))
         max_samples = wanted if wanted == 1 else wanted + 2
@@ -454,12 +463,22 @@ class LlmHelper:
                 thinking=thinking,
             )
             parsed = self._parse_phrase(text or "", topic)
+            trace.append(
+                {
+                    "sample": sample_index,
+                    "raw": text or "",
+                    "parsed": parsed,
+                }
+            )
             if parsed:
                 answers.append(parsed)
                 result = self._consensus(answers, wanted)
                 if result is not None:
+                    self.last_phrase_samples = trace
                     return result
-        return self._consensus(answers, wanted)
+        result = self._consensus(answers, wanted)
+        self.last_phrase_samples = trace
+        return result
 
     @staticmethod
     def _parse_fill(text: str, topic: dict[str, Any] | None = None) -> str | None:

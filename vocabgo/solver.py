@@ -567,11 +567,12 @@ class Solver:
         predicted: Any,
         server_data: dict[str, Any] | None = None,
     ) -> None:
-        """把无选项填空题的失败样本落盘，方便离线复现和补充资料。"""
-        if mode == 0 or mode == 32 or topic_options(topic):
+        """把填空题/组词题的失败样本落盘，方便离线复现和补充资料。"""
+        if mode == 0 or (mode != 32 and topic_options(topic)):
             return
         samples = []
-        for item in getattr(self.llm, "last_fill_samples", []) or []:
+        source = "last_phrase_samples" if mode == 32 else "last_fill_samples"
+        for item in getattr(self.llm, source, []) or []:
             if not isinstance(item, dict):
                 continue
             samples.append(
@@ -585,12 +586,17 @@ class Solver:
         record = {
             "ts": int(time.time()),
             "mode": mode,
-            "prompt_version": 3,
+            "prompt_version": 4,
             "topic_code": str(topic.get("topic_code") or ""),
             "stem": topic_stem(topic),
             "remark": topic_remark(topic),
             "vocabulary": sorted(self.vocabulary)[:200],
-            "candidates": self._fill_candidate_hint(topic)[:4000],
+            "options": [
+                str(option.get("content") or "")
+                for option in topic_options(topic)
+                if option.get("content")
+            ],
+            "candidates": self._fill_candidate_hint(topic)[:4000] if mode != 32 else "",
             "predicted": predicted,
             "reason": reason,
             "samples": samples,

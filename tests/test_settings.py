@@ -385,6 +385,30 @@ class LlmHelperTest(unittest.TestCase):
                 "选项使用 someone 时，sb. 也应能匹配",
             )
 
+        possessive_topic = {
+            "topic_mode": 32,
+            "stem": {"content": "___ ___ ___", "remark": "侵犯某人的隐私"},
+            "options": [{"content": "violate"}, {"content": "sb.'s"}, {"content": "privacy"}],
+        }
+        with patch.object(LlmHelper, "_chat", return_value="violate sb.'s privacy"):
+            self.assertEqual(
+                helper.ask_phrase(possessive_topic, {}, votes=3),
+                "violate,sb.'s,privacy",
+                "所有格 sb.'s 不应被拆成 sb 和 s",
+            )
+
+        plural_possessive_topic = {
+            "topic_mode": 32,
+            "stem": {"content": "___ ___ ___ ___", "remark": "看在旧日的情分上"},
+            "options": [{"content": "for"}, {"content": "old"}, {"content": "times'"}, {"content": "sake"}],
+        }
+        with patch.object(LlmHelper, "_chat", return_value="for old times' sake"):
+            self.assertEqual(
+                helper.ask_phrase(plural_possessive_topic, {}, votes=3),
+                "for,old,times',sake",
+                "复数所有格 times' 应保持为一个选项",
+            )
+
     def test_ask_fill_uses_final_english_line_and_majority(self) -> None:
         helper = LlmHelper(url="https://x", key="k", model="m", logger=lambda _m: None)
         topic = {
