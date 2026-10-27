@@ -49,6 +49,26 @@ class _CorrectsClient:
         }
 
 
+class _FormClient:
+    def __init__(self) -> None:
+        self.verified: list[str] = []
+
+    def verify(self, code, answer):
+        self.verified.append(str(answer))
+        ok = str(answer) == "conventions"
+        return {
+            "data": {
+                "answer_result": 1 if ok else 2,
+                "over_status": 1,
+                "answer_corrects": [],
+                "topic_code": code,
+            }
+        }
+
+    def submit(self, code, spent):
+        return {"data": {"topic_code": code}}
+
+
 class _FakeLlm:
     enabled = True
     auth_failed = False
@@ -241,6 +261,42 @@ class FillOptimizationTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(solver.last_accepted_answer, "orbit the sun")
         self.assertEqual(client.calls[:2], ["orbit,the,sun", "orbit the sun　"])
+
+    def test_fill_word_forms_cover_common_plurals(self) -> None:
+        self.assertEqual(Solver._fill_word_forms("convention"), ["conventions"])  # noqa: SLF001
+        self.assertEqual(Solver._fill_word_forms("study"), ["studies"])  # noqa: SLF001
+        self.assertEqual(Solver._fill_word_forms("watch"), ["watches"])  # noqa: SLF001
+
+    def test_rejected_singular_retries_plural_form(self) -> None:
+        class FakeLlm:
+            enabled = True
+            auth_failed = False
+
+            def ask_fill(self, *_args, **_kwargs):
+                return "convention"
+
+            def ask_choice(self, *_args, **_kwargs):
+                raise AssertionError("mode 51 不应调用选择题模型")
+
+        folder = Path(tempfile.mkdtemp())
+        client = _FormClient()
+        solver = Solver(
+            client,  # type: ignore[arg-type]
+            Bank(folder / "bank.json"),
+            llm=FakeLlm(),  # type: ignore[arg-type]
+            vocabulary={"convention"},
+            probe=False,
+            logger=lambda _message: None,
+        )
+        topic = {
+            "topic_mode": 51,
+            "stem": {"content": "social {}", "remark": "社会习俗"},
+            "options": [],
+        }
+
+        solver._solve_one(topic)  # noqa: SLF001
+
+        self.assertEqual(client.verified, ["convention", "conventions"])
 
 
 if __name__ == "__main__":

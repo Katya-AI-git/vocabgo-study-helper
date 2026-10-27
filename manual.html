@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>词达人工具优化版 V4 使用说明</title>
+<title>词达人工具优化版 V1.0.4 使用说明</title>
 <style>
 :root { color-scheme: light; }
 body { margin:0; background:#f3f6f8; color:#1f2933; font:16px/1.75 "Microsoft YaHei","PingFang SC",sans-serif; }
@@ -25,13 +25,17 @@ li { margin:5px 0; }
 </head>
 <body>
 <header>
-  <h1>词达人工具优化版 V4</h1>
+  <h1>词达人工具优化版 V1.0.4</h1>
   <p>用户说明已合并为一个 HTML 文件，不需要 Typora。版本变化见 <a href="版本记录.txt">版本记录.txt</a>。</p>
   <nav><a href="#quick">快速上手</a><a href="#guide">详细使用说明</a><a href="#optimization">本地资料与优化</a><a href="#cache">缓存策略说明</a><a href="#continue">继续练习修复</a></nav>
 </header>
 <main><article id="quick"><h2>快速上手</h2><p>V4 新增：</p>
 <p>1. 当前任务词表约束填空题 2. `sb./sth.` 等短语占位词归一 3. 填空题失败样本记录</p>
 <p>V1.0.3 新增：内部版本统一、GitHub 新版本检测，可选择前往更新或忽略该版本。</p>
+<p>V1.0.4 新增：图片资料 OCR 导入、批量图片 token 预警、手动检查更新、自动词形变化。</p>
+<p>设置页可随时点击“检查更新”手动检测；启动时也会每 24 小时后台检查一次。</p>
+<p>本地资料库支持直接导入常见图片：优先自动调用本机 Tesseract；本地不可用时再使用已配置的视觉模型。</p>
+<p>图片支持多选；超过 20 张且需要回退到视觉模型时，会先提醒可能产生较多 token 消耗。</p>
 <p>V3 在 V2 基础上新增：</p>
 <p>1. 本地资料库 2. 自适应思考模式 3. 文字型 PDF、DOCX、EPUB 教材导入 4. 用 pypdf 解析 PDF</p>
 <p>本地资料库：</p>
@@ -136,12 +140,13 @@ li { margin:5px 0; }
 <li><code>config.json</code> 会保存微信授权令牌和可选的大模型密钥，不要上传或发送给他人。</li>
 <li>题库 <code>bank.json</code>、词典缓存和用户资料会自动保存在 <code>%LOCALAPPDATA%\VocabgoAuto</code>，不会留在桌面程序目录，避免 QQ 扫描、上传或同步文件时占用题库，也不会把个人教材打进分享包。</li>
 <li>自动化操作可能受平台规则和接口更新影响；请仅在自己的账号上低频使用，并遵守学校与平台要求。</li>
-</ul></article><article id="optimization"><h2>本地资料与优化</h2><h3>优化版 V4 说明</h3>
+</ul></article><article id="optimization"><h2>本地资料与优化</h2><h3>优化版 V1.0.4 说明</h3>
 <p>本版本在 V3 的题库、本地资料、自适应思考和继续练习修复基础上，重点提高填空题与短语题稳定性。</p>
-<h4>V4 填空与短语稳定性</h4>
+<h4>V1.0.4 填空、短语与资料识别</h4>
 <ul>
 <li><code>mode=51</code> 填空题优先从当前任务词表中选择答案，减少同义词和词形不一致。</li>
 <li>中文含义会先翻译成英文候选，再去掉题干中的固定部分，例如 <code>in batches</code> 裁成 <code>batches</code>。</li>
+<li>任务词表提供原形，允许按句子补正确词形；服务端拒绝单数时会自动尝试常见复数形式。</li>
 <li>模型返回完整搭配时，提交前会自动裁剪，只保留空格中的答案。</li>
 <li>服务端返回正确答案时，会兼容空格格式和逗号格式两种短语提交形式。</li>
 <li>测试任务保留全部词，允许部分词超过单词分值上限，用超分补足任务总分。</li>

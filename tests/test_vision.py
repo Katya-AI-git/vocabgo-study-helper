@@ -138,6 +138,18 @@ class ImageReaderTest(unittest.TestCase):
         self.assertEqual(reader.backend, "auto")
         self.assertEqual(reader.tesseract_cmd, "", "留空表示自动查找 tesseract")
 
+    def test_material_reader_can_prefer_local_tesseract(self) -> None:
+        reader = load_reader_from_config(
+            {
+                "vision": {"backend": "auto"},
+                "llm": {"url": "https://api.example.com", "key": "k", "model": "m"},
+            },
+            logger=lambda _m: None,
+            local_first=True,
+        )
+        names = [fn.__name__ for fn in reader._backends()]  # noqa: SLF001
+        self.assertEqual(names[:2], ["_via_tesseract", "_via_llm"])
+
     def test_tesseract_resolution_is_lenient(self) -> None:
         """显式路径找不到时允许退回自动探测，且任何情况下都不该抛异常。"""
         self.assertIsInstance(resolve_tesseract(""), (str, type(None)))

@@ -365,6 +365,18 @@ class Solver:
                     self.bank.put(key, accepted, display_stem(topic))
                     self.log(f"  🤖 {stem} → {display_answer(topic, accepted)} {source_label('llm')}")
                     return self._submit(code, mode)
+                if mode == 51:
+                    for form in self._fill_word_forms(guess):
+                        code, form_ok, form_data = self._answer(topic, code, form)
+                        if form_ok:
+                            accepted = self.last_accepted_answer
+                            self.stats.llm += 1
+                            self.bank.put(key, accepted, display_stem(topic))
+                            self.log(
+                                f"  🤖 {stem} → {display_answer(topic, accepted)} "
+                                f"{source_label('llm')}（词形调整）"
+                            )
+                            return self._submit(code, mode)
                 self._record_fill_failure(topic, mode, "server_rejected", guess, answer_data)
                 self.log(f"  ⚠️ {stem} → 大模型答案未通过校验，进入兜底")
             else:
@@ -555,7 +567,7 @@ class Solver:
         if self.vocabulary:
             words = sorted(self.vocabulary)[:200]
             blocks.append(
-                "当前任务词表（只能从下列单词中选一个，禁止同义词）:\n"
+                "当前任务词表（这些是原形；按句子需要补正确词形，允许复数、时态等变化，禁止同义词）:\n"
                 + ", ".join(words)
             )
         if candidates:
@@ -564,6 +576,30 @@ class Solver:
                 + "\n".join(f"{index}. {item}" for index, item in enumerate(candidates))
             )
         return "\n\n".join(blocks)
+
+    @staticmethod
+    def _fill_word_forms(value: Any) -> list[str]:
+        """给填空答案生成下一步可尝试的词形，至少覆盖常见复数变化。"""
+        text = str(value or "").strip().lower()
+        if not text:
+            return []
+        words = text.split()
+        last = words[-1]
+        forms: list[str] = []
+
+        if last.endswith("y") and len(last) > 1 and last[-2] not in "aeiou":
+            forms.append(last[:-1] + "ies")
+        elif last.endswith(("s", "x", "z", "ch", "sh")):
+            forms.append(last + "es")
+        else:
+            forms.append(last + "s")
+
+        result: list[str] = []
+        for form in forms:
+            candidate = " ".join(words[:-1] + [form])
+            if candidate != text and candidate not in result:
+                result.append(candidate)
+        return result
 
     def _record_fill_failure(
         self,

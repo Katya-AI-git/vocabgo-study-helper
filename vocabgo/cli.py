@@ -287,9 +287,11 @@ def cmd_materials(args: argparse.Namespace) -> int:
     """管理本地资料库：导入、列表、删除和清空。"""
     config = load_config(args.config)
     runtime = config.get("runtime") or {}
+    reader = load_reader_from_config(config, logger=print, local_first=True)
     library = MaterialLibrary(
         materials_dir(runtime.get("materials_path") or None),
         logger=print,
+        ocr_reader=reader,
     )
     action = args.action
     if action == "import":

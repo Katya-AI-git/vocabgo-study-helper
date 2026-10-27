@@ -139,6 +139,36 @@ class MaterialLibraryTest(unittest.TestCase):
         result = self.library.import_file(path)
         self.assertGreaterEqual(result.chunks, 1)
 
+    def test_image_is_ocr_imported_through_reader(self) -> None:
+        class FakeReader:
+            def __init__(self) -> None:
+                self.payloads: list[str] = []
+
+            def read(self, ref):
+                self.payloads.append(str(ref))
+                return "diligent adj. 勤奋的\nDiligent students review their notes."
+
+        reader = FakeReader()
+        library = MaterialLibrary(
+            self.folder / "image-materials",
+            logger=lambda _m: None,
+            ocr_reader=reader,
+        )
+        path = self.folder / "words.png"
+        path.write_bytes(b"fake-png")
+
+        result = library.import_file(path)
+
+        self.assertEqual(library.lookup("diligent"), ["adj. 勤奋的"])
+        self.assertGreaterEqual(result.chunks, 1)
+        self.assertTrue(reader.payloads and reader.payloads[0].startswith("data:image/png;base64,"))
+
+    def test_image_without_ocr_reader_reports_actionable_error(self) -> None:
+        path = self.folder / "words.jpg"
+        path.write_bytes(b"fake-jpg")
+        with self.assertRaisesRegex(MaterialImportError, "启用读图 OCR"):
+            self.library.import_file(path)
+
     def test_remove_source_rebuilds_indexes(self) -> None:
         path = self.write("words.txt", "fragile adj. 易碎的")
         result = self.library.import_file(path)

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import csv
+import base64
 import hashlib
 import io
 import json
@@ -36,7 +37,8 @@ from .matcher import (
 
 DATA_VERSION = 1
 DATA_NAME = "materials.json"
-SUPPORTED_SUFFIXES = {".txt", ".md", ".csv", ".json", ".docx", ".epub", ".pdf"}
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
+SUPPORTED_SUFFIXES = {".txt", ".md", ".csv", ".json", ".docx", ".epub", ".pdf"} | IMAGE_SUFFIXES
 _CJK = re.compile(r"[\u3400-\u9fff]")
 _ENGLISH_WORD = re.compile(r"[A-Za-z][A-Za-z'’-]{1,}")
 _POS = r"(?:n|v|vt|vi|adj|adv|prep|conj|pron|num|art|aux|phr)\."
@@ -383,11 +385,38 @@ def _pdf_text(path: Path) -> str:
     return "\n\n".join(pages)
 
 
-def _extract(path: Path) -> _Extracted:
+def _image_text(path: Path, reader: Any | None) -> str:
+    """图片资料先 OCR 成文本，再接普通资料索引。"""
+    if reader is None:
+        raise MaterialImportError(
+            "图片资料需要先启用读图 OCR：本机装 Tesseract，或在设置页配置支持图片的模型"
+        )
+    mime = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".bmp": "image/bmp",
+        ".webp": "image/webp",
+        ".tif": "image/tiff",
+        ".tiff": "image/tiff",
+    }.get(path.suffix.lower(), "image/png")
+    try:
+        payload = base64.b64encode(path.read_bytes()).decode("ascii")
+        text = reader.read(f"data:{mime};base64,{payload}")
+    except Exception as exc:
+        raise MaterialImportError(f"图片 OCR 失败：{exc}") from exc
+    if not text or not str(text).strip():
+        raise MaterialImportError(
+            "图片 OCR 没有识别出文字；请确认图片清晰，或先在设置页完成读图体检"
+        )
+    return str(text)
+
+
+def _extract(path: Path, ocr_reader: Any | None = None) -> _Extracted:
     suffix = path.suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
         raise MaterialImportError(
-            f"不支持 {suffix or '无扩展名'} 文件；可用 TXT、MD、CSV、JSON、DOCX、EPUB、PDF"
+            f"不支持 {suffix or '无扩展名'} 文件；可用 TXT、MD、CSV、JSON、DOCX、EPUB、PDF、PNG、JPG、WEBP"
         )
     if suffix in {".txt", ".md"}:
         text = _decode(path.read_bytes())
@@ -403,6 +432,10 @@ def _extract(path: Path) -> _Extracted:
         return _Extracted(text, glossary, phrases)
     if suffix == ".epub":
         text = _epub_text(path)
+        glossary, phrases = _parse_loose_entries(text)
+        return _Extracted(text, glossary, phrases)
+    if suffix in IMAGE_SUFFIXES:
+        text = _image_text(path, ocr_reader)
         glossary, phrases = _parse_loose_entries(text)
         return _Extracted(text, glossary, phrases)
     text = _pdf_text(path)
@@ -459,11 +492,13 @@ class MaterialLibrary:
         *,
         logger: Any = None,
         enabled: bool = True,
+        ocr_reader: Any | None = None,
     ) -> None:
         self.root = Path(root)
         self.path = self.root / DATA_NAME
         self.log = logger or (lambda _message: None)
         self.enabled = enabled
+        self.ocr_reader = ocr_reader
         self._data = self._empty()
         self.load()
 
@@ -533,7 +568,7 @@ class MaterialLibrary:
                     duplicate=True,
                 )
 
-        extracted = _extract(path)
+        extracted = _extract(path, self.ocr_reader)
         text = _clean_text(extracted.text)
         chunk_values = _chunks(text)
         if not extracted.glossary and not extracted.phrases and not chunk_values:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from vocabgo.gui import VocabgoApp
@@ -69,6 +70,41 @@ class UpdateCheckTest(unittest.TestCase):
 
         self.assertEqual(app.config["runtime"]["ignored_update_version"], "v1.0.4")
         save.assert_called_once()
+
+    def test_manual_check_reports_latest_version(self) -> None:
+        app = object.__new__(VocabgoApp)
+        app.config = {"runtime": {}}
+        app.log = lambda message: setattr(app, "last_log", message)
+
+        with (
+            patch("vocabgo.gui.check_for_update", return_value=None),
+            patch("vocabgo.gui.save_settings"),
+        ):
+            app._check_updates(manual=True)  # noqa: SLF001
+
+        self.assertIn("当前已是最新版本", app.last_log)
+
+    def test_large_image_import_warns_before_model_ocr(self) -> None:
+        class Reader:
+            backend = "auto"
+            tesseract_cmd = ""
+            llm_url = "https://api.example.com"
+            llm_key = "k"
+
+        app = object.__new__(VocabgoApp)
+        app.collect_config = lambda: {}
+        app.log = lambda _message: None
+        paths = [Path(f"page-{index}.png") for index in range(21)]
+
+        with (
+            patch("vocabgo.gui.load_reader_from_config", return_value=Reader()),
+            patch("vocabgo.gui.resolve_tesseract", return_value=None),
+            patch("vocabgo.gui.messagebox.askyesno", return_value=False) as ask,
+        ):
+            allowed = app._confirm_large_image_ocr(paths)  # noqa: SLF001
+
+        self.assertFalse(allowed)
+        ask.assert_called_once()
 
 
 if __name__ == "__main__":

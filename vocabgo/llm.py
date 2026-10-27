@@ -716,7 +716,7 @@ class LlmHelper:
             if fill_candidates.strip():
                 candidates = (
                     "当前任务词表与相关候选"
-                    "（答案只能从任务词表中选择一个单词，禁止同义词）:\n"
+                    "（词表是原形；按句子补正确词形，允许复数、时态等变化，禁止同义词）:\n"
                     f"{fill_candidates.strip()[:2000]}\n\n"
                 )
             return (

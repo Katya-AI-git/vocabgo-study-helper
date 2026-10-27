@@ -140,6 +140,7 @@ class ImageReader:
         thinking: str = "auto",
         tesseract_cmd: str = "tesseract",
         custom: Callable[[ImageRef], str | None] | None = None,
+        local_first: bool = False,
         timeout: float = 60.0,
         logger: Callable[[str], None] = print,
     ) -> None:
@@ -151,6 +152,7 @@ class ImageReader:
         self.thinking = thinking or "auto"
         self.tesseract_cmd = tesseract_cmd
         self.custom = custom
+        self.local_first = bool(local_first)
         self.timeout = timeout
         self.log = logger
         self._cache: dict[str, str] = {}
@@ -211,9 +213,12 @@ class ImageReader:
             return [self._via_baidu]
         # auto：有 LLM 配置就用 LLM（准），否则本地 tesseract（免费、不出本机）
         chain: list[Callable[[ImageRef], str | None]] = []
+        if self.local_first:
+            chain.append(self._via_tesseract)
         if self.llm_url and self.llm_key:
             chain.append(self._via_llm)
-        chain.append(self._via_tesseract)
+        if not self.local_first:
+            chain.append(self._via_tesseract)
         return chain
 
     def _as_data_uri(self, ref: ImageRef) -> str | None:
@@ -366,7 +371,12 @@ def hydrate_topic(topic: dict[str, Any], reader: ImageReader, logger: Callable[[
     return replaced
 
 
-def load_reader_from_config(config: dict[str, Any], logger: Callable[[str], None] = print) -> ImageReader:
+def load_reader_from_config(
+    config: dict[str, Any],
+    logger: Callable[[str], None] = print,
+    *,
+    local_first: bool = False,
+) -> ImageReader:
     """读图配置：显式 vision 段优先，否则复用 llm 段（含 provider 预设的视觉模型）。"""
     from .settings import resolve_llm
 
@@ -380,6 +390,7 @@ def load_reader_from_config(config: dict[str, Any], logger: Callable[[str], None
         llm_provider=llm["provider"],
         thinking=llm["thinking"],
         tesseract_cmd=str(vision.get("tesseract_cmd") or ""),
+        local_first=local_first,
         logger=logger,
     )
 

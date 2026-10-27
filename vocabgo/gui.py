@@ -36,7 +36,7 @@ from .llm import (
     thinking_from_label,
     thinking_label,
 )
-from .materials import MaterialImportError, MaterialLibrary
+from .materials import IMAGE_SUFFIXES, MaterialImportError, MaterialLibrary
 from .paths import app_dir
 from .paths import bank_path as default_bank_path
 from .paths import config_path, materials_dir
@@ -422,6 +422,7 @@ class VocabgoApp:
         ttk.Button(actions, text="💾 保存设置", command=self.on_save_settings).pack(side="left", padx=8)
         ttk.Button(actions, text="大模型体检", command=self.on_llm_check).pack(side="left")
         ttk.Button(actions, text="打开程序目录", command=lambda: open_file(app_dir())).pack(side="left", padx=8)
+        ttk.Button(actions, text="检查更新", command=self.on_check_update_now).pack(side="left")
 
     def _apply_network(self) -> None:
         """把界面上的代理设置同步给网络层（默认直连，忽略系统代理）。"""
@@ -674,31 +675,68 @@ class VocabgoApp:
         return MaterialLibrary(
             materials_dir(runtime.get("materials_path") or None),
             logger=self.log,
+            ocr_reader=load_reader_from_config(
+                self.collect_config(),
+                logger=self.log,
+                local_first=True,
+            ),
         )
 
     def on_import_material(self) -> None:
-        path = filedialog.askopenfilename(
+        selected = filedialog.askopenfilenames(
             parent=self.root,
             title="导入词表、教材或电子书",
             filetypes=[
                 ("支持的资料", "*.txt *.md *.csv *.json *.docx *.epub *.pdf"),
                 ("文本与表格", "*.txt *.md *.csv *.json"),
+                ("图片资料", "*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff"),
                 ("电子书", "*.docx *.epub *.pdf"),
                 ("所有文件", "*.*"),
             ],
         )
-        if not path:
+        paths = [Path(item) for item in selected if item]
+        if not paths:
             return
+        if not self._confirm_large_image_ocr(paths):
+            return
+        library = self._materials_library()
 
         def task() -> None:
-            try:
-                result = self._materials_library().import_file(path)
-                self.log(f"📚 {result.message}")
-            except (MaterialImportError, OSError) as exc:
-                self.log(f"⚠️ 资料导入失败：{exc}")
+            for path in paths:
+                try:
+                    result = library.import_file(path)
+                    self.log(f"📚 {result.message}")
+                except (MaterialImportError, OSError) as exc:
+                    self.log(f"⚠️ 资料导入失败：{path.name}：{exc}")
             self.ui(self._refresh_status)
 
         self._run_in_thread(task, busy=False)
+
+    def _confirm_large_image_ocr(self, paths: list[Path]) -> bool:
+        """批量图片若会调用视觉模型，先明确提醒 token 消耗。"""
+        images = [path for path in paths if path.suffix.lower() in IMAGE_SUFFIXES]
+        if len(images) <= 20:
+            return True
+        reader = load_reader_from_config(
+            self.collect_config(),
+            logger=self.log,
+            local_first=True,
+        )
+        tesseract = resolve_tesseract(reader.tesseract_cmd)
+        may_use_llm = reader.backend == "llm" or (
+            reader.backend == "auto"
+            and not tesseract
+            and bool(reader.llm_url and reader.llm_key)
+        )
+        if not may_use_llm:
+            return True
+        return messagebox.askyesno(
+            APP_TITLE,
+            f"本次选择了 {len(images)} 张图片。\n\n"
+            "当前没有可用的本地 Tesseract OCR，将回退到视觉大模型识别。\n"
+            "图片数量较多，可能消耗较多 token 和等待时间。\n\n"
+            "仍然继续导入吗？",
+        )
 
     def on_open_materials(self) -> None:
         try:
@@ -863,7 +901,15 @@ class VocabgoApp:
                 pass
         threading.Thread(target=self._check_updates, daemon=True).start()
 
-    def _check_updates(self) -> None:
+    def on_check_update_now(self) -> None:
+        """手动检查 GitHub 更新，不受 24 小时缓存限制。"""
+        self.log("🔎 正在检查 GitHub 更新…")
+        threading.Thread(
+            target=lambda: self._check_updates(manual=True),
+            daemon=True,
+        ).start()
+
+    def _check_updates(self, *, manual: bool = False) -> None:
         info = check_for_update(__version__)
         runtime = self.config.setdefault("runtime", {})
         runtime["update_checked_at"] = datetime.datetime.now().isoformat(timespec="seconds")
@@ -872,8 +918,12 @@ class VocabgoApp:
         except Exception:
             pass
         if info is None:
+            if manual:
+                self.log(f"✅ 当前已是最新版本：{__version__}")
             return
         if str(runtime.get("ignored_update_version") or "") == info.tag:
+            if manual:
+                self.log(f"ℹ️ 已忽略版本 {info.tag}，如需更新请清除忽略设置")
             return
         self.ui(self._prompt_update, info)
 
