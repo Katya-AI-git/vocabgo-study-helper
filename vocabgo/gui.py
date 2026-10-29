@@ -254,6 +254,10 @@ class VocabgoApp:
         self.btn_run_selected.pack(side="right", padx=6)
         self.btn_stop = ttk.Button(row2, text="⏹ 停止", command=self.on_stop, state="disabled")
         self.btn_stop.pack(side="right", padx=6)
+        # 开刷前先体检：提前发现「已被服务端固定、怎么刷都不动」的任务，
+        # 免得白等一轮才发现刷不动（测试任务只有一次机会，耗不起）。
+        self.btn_health = ttk.Button(row2, text="🩺 任务体检", command=self.on_check_task_health)
+        self.btn_health.pack(side="right", padx=6)
 
         # 日志
         box3 = ttk.LabelFrame(frame, text="日志")
@@ -799,7 +803,37 @@ class VocabgoApp:
     def log(self, message: str) -> None:
         self.log_queue.put(str(message))
 
+    def _log_sticks_to_bottom(self) -> bool:
+        """日志当前是否停在末尾（= 用户没有往上翻）。
+
+        两种情况必须按「跟随末尾」处理，否则会误判成「用户在看上面」，
+        从此再也不自动滚动 —— 那是另一个方向的毛病：
+
+        * 控件还没显示出来（窗口没开、被最小化）：谈不上用户在哪儿，
+          而且此时 yview() 会给出 ``(0.0, 0.077)`` 这种未布局的假值。
+        * yview() 返回 ``(0.0, 0.0)``：Tk 对空控件的回法，同样不是「翻到顶了」。
+        """
+        try:
+            if not self.log_text.winfo_ismapped():
+                return True  # 还没显示，按跟随处理
+            first, last = self.log_text.yview()
+        except (tk.TclError, IndexError, ValueError):
+            return True
+        if first == 0.0 and last == 0.0:
+            return True
+        return last >= 0.999
+
     def _drain_log(self) -> None:
+        # 关键：先记住「用户正在看的位置」，再插入新行。
+        # 刷题时每答完一个词就写一行日志，旧代码无条件 see("end")，
+        # 于是想往上翻看前面答了什么，每 0.15 秒就被拽回底部 —— 根本看不了。
+        # 现在：本来就停在末尾才自动跟随；用户翻上去了就保持不动。
+        stick = self._log_sticks_to_bottom()
+        try:
+            top_line = int(self.log_text.index("@0,0").split(".")[0])
+        except (tk.TclError, ValueError, IndexError):
+            top_line = 1
+
         wrote = False
         try:
             while True:
@@ -810,7 +844,17 @@ class VocabgoApp:
         except queue.Empty:
             pass
         if wrote:
-            self.log_text.see("end")
+            if stick:
+                self.log_text.see("end")
+            else:
+                # 内容只往末尾追加，上面的行号不会变；按「行号 ÷ 总行数」还原位置，
+                # 新行就不会把视图挤走。
+                try:
+                    total = int(self.log_text.index("end-1c").split(".")[0])
+                    if total > 0:
+                        self.log_text.yview_moveto(max(0.0, (top_line - 1) / total))
+                except (tk.TclError, ValueError, IndexError):
+                    pass
             self.log_text.configure(state="disabled")
         try:
             self._log_job = self.root.after(150, self._drain_log)
@@ -1304,6 +1348,149 @@ class VocabgoApp:
     def on_stop(self) -> None:
         self.cancel.set()
         self.log("⏹️ 收到停止指令，正在收尾…")
+
+    # ── 任务体检 ──
+    def on_check_task_health(self) -> None:
+        """开刷前先体检：这个任务到底还能不能刷。
+
+        为什么要这个功能：测试任务只有一次机会，而它一旦在答题中途被中断
+        （断网、令牌失效、手动停止、触发风控），服务端会把成绩**固定在断点处**，
+        之后怎么刷都不动 —— 连官方小程序里手工做完也报错、进度不变。
+        以前只能靠「刷一轮试试」来判断，白耗时间。现在提前读服务端数据就能看出来。
+        """
+        if self.var_kind.get() != "class":
+            messagebox.showinfo(APP_TITLE, "任务体检目前只支持班级任务")
+            return
+        selection = self.task_list.curselection()
+        if not selection:
+            messagebox.showinfo(APP_TITLE, "先在任务列表里选中一条")
+            return
+        chosen = self.tasks[selection[0]]
+
+        def task() -> None:
+            client = self._client()
+            self._check_task_health(client, chosen)
+
+        self._run_in_thread(task, busy=False)
+
+    def _check_task_health(self, client: VocabgoClient, chosen: dict[str, Any]) -> None:
+        """体检主体：读服务端真实数据，给出「能不能刷」的结论。只读，不提交答案。"""
+        task_id = int(chosen.get("task_id") or 0)
+        release_id = int(chosen.get("release_id") or 0)
+        name = str(chosen.get("task_name") or "")
+        kind = "测试任务" if class_task_kind(chosen) == "test" else "学习任务"
+        self.log(f"🩺 任务体检：{name}（{kind}）")
+
+        if task_id <= 0:
+            self.log("   ❌ 这条还没开始过（服务端没给编号）—— 先去词达人里点开它，再回来刷新任务")
+            return
+
+        # ① 服务端记录的成绩
+        try:
+            info = client.task_info(task_id, release_id).get("data") or {}
+        except Exception as exc:
+            self.log(f"   ❌ 读任务信息失败：{exc}")
+            return
+        progress = int(info.get("progress") or 0)
+        score = info.get("score")
+        try:
+            minutes = float(info.get("time_spent") or 0) / 1000 / 60
+        except (TypeError, ValueError):
+            minutes = 0.0
+        little = int(info.get("exist_little_task") or 0)
+        self.log(f"   进度 {progress}%　得分 {score}　累计用时 {minutes:.1f} 分钟　未完成小节={little}")
+
+        # ② 单词分数分布：看还有多少词没到本次最高分
+        try:
+            words = (client.chose_word_list(task_id).get("data") or {}).get("word_list") or []
+        except Exception as exc:
+            self.log(f"   ⚠️ 读词表失败：{exc}")
+            words = []
+        if words:
+            scores: list[tuple[str, float]] = []
+            for item in words:
+                try:
+                    scores.append((str(item.get("word") or ""), float(item.get("score") or 0)))
+                except (TypeError, ValueError):
+                    scores.append((str(item.get("word") or ""), 0.0))
+            top = max(s for _, s in scores)
+            low = [f"{w}({s:g})" for w, s in scores if s < top]
+            self.log(f"   共 {len(scores)} 词，最高分 {top:g}，未达最高分的 {len(low)} 个")
+            if low:
+                shown = ", ".join(low[:10]) + (" …" if len(low) > 10 else "")
+                self.log(f"      低分词：{shown}")
+
+        # ③ 服务端还给不给题
+        #
+        # ⚠️ 这里只报事实，不下「能不能刷完」的结论。
+        # 实测教训：被固定在断点处的任务，服务端**照样出题**，
+        # 在官方小程序里也照样能打开、能答 —— 但提交之后报错、进度不变。
+        # 所以「能出题」完全不能证明「答完算数」，拿它当结论会误导人。
+        try:
+            topic = VocabgoClient.pick_topic(client.start_answer(task_id, release_id))
+            if topic:
+                self.log(f"   服务端可出题（当前 {topic.get('topic_done_num')}/{topic.get('topic_total')}）")
+            else:
+                self.log("   服务端没返回题目，本节可能已答完，需要重新选词后再试")
+        except VocabgoError as exc:
+            text = str(exc)
+            if "20001" in text or "需要选词" in text:
+                self.log("   本节已答完（服务端要求重新选词）")
+            elif "20006" in text or "任务已截止" in text:
+                self.log("   ⛔ 任务已截止，无法再答")
+            elif "20004" in text or "任务已完成" in text:
+                if progress >= 100:
+                    self.log("   服务端标记为已完成，进度也已 100%，不用再刷")
+                else:
+                    self.log(f"   ⛔ 服务端说「任务已完成」，但进度只有 {progress}%")
+            else:
+                self.log(f"   ⚠️ 出题请求失败：{text[:160]}")
+        except Exception as exc:
+            self.log(f"   ⚠️ 出题请求异常：{type(exc).__name__}: {exc}")
+
+        # ④ 与上次体检对比 —— 唯一能判断「刷了到底算不算数」的可靠信号
+        note = self._health_snapshot(task_id, progress, score, info.get("time_spent"))
+        if note:
+            self.log(f"   ⛔ {note}")
+            self.log("      → 该任务很可能已被固定在断点处，建议换一条新任务，别再耗时间")
+        else:
+            self.log("   💡 已记下本次状态。刷一轮后再体检一次，就能看出进度到底动没动")
+
+    def _health_snapshot(self, task_id: int, progress: int, score: Any, spent: Any) -> str | None:
+        """记下这次看到的状态并与上次比较；只有「一直没变」才返回说明。
+
+        为什么不能只看「服务端还出不出题」：被固定的任务照样出题。
+        可靠的判据只有一个 —— **隔一段时间再看，进度和累计用时变没变**。
+        没变，说明服务端根本没在记账，再刷也没用。
+        """
+        runtime = self.config.setdefault("runtime", {})
+        snapshots = runtime.setdefault("task_snapshots", {})
+        key = str(task_id)
+        prev = snapshots.get(key) or {}
+        now = datetime.datetime.now()
+        note = None
+
+        if prev:
+            unchanged = prev.get("progress") == progress and prev.get("time_spent") == spent
+            try:
+                prev_at = datetime.datetime.fromisoformat(str(prev.get("at") or ""))
+                minutes = (now - prev_at).total_seconds() / 60
+            except (TypeError, ValueError):
+                minutes = 0.0
+            if unchanged and minutes >= 3:
+                note = f"与上次体检（{minutes:.0f} 分钟前）相比，进度和累计用时完全没变"
+
+        snapshots[key] = {
+            "progress": progress,
+            "score": str(score),
+            "time_spent": spent,
+            "at": now.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        try:
+            save_settings(self.config)
+        except Exception as exc:
+            self.log(f"   （状态记录失败，不影响体检：{type(exc).__name__}）")
+        return note
 
     def _do_run(self, index: int) -> None:
         config = self.collect_config()
@@ -1814,18 +2001,14 @@ class VocabgoApp:
                 self.log(
                     f"⚠️ 测试任务没刷到 100%（停在 {progress}%），内部会话已到上限 {session_limit}。"
                 )
-                self.log(
-                    "   这说明服务端中途不再往下出题 —— 常见原因是该小节已答完但进度没结算、"
-                    "或在别的设备上打开过这个词达人账号。"
-                )
-                self.log("   可再次开始：程序会从当前进度接着答，不会从头重来。")
+                self.log("   可能是进度结算慢，也可能是该任务已在服务端被固定 —— 再跑一次看进度会不会变。")
             break
         else:
             if is_test_task:
                 self.log(
                     f"⚠️ 测试任务内部会话达到硬上限 {TEST_SESSION_HARD_LIMIT} 仍未完成（{last_progress}%）。"
                 )
-                self.log("   可检查网络后再次开始，程序会从当前进度接着答。")
+                self.log("   若进度始终不动，说明该任务已被冻结，建议换一条新任务。")
         try:
             signin = client.signin().get("data") or {}
             if signin:

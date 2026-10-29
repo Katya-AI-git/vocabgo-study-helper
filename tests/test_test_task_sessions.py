@@ -141,7 +141,9 @@ class TestSessionKeepGoingTest(unittest.TestCase):
             )
         self.assertEqual(solver.runs, 2)
         self.assertTrue(any("没刷到 100%" in line for line in app.logs), "必须给出停下来的原因")
-        self.assertTrue(any("接着答" in line for line in app.logs), "要告诉用户能继续")
+        # 旧版这里提示「可接着答」；实测冻结任务连官方小程序都救不回来，
+        # 所以改成中性的「再跑一次看进度会不会变」，不误导、也不做自动判定。
+        self.assertTrue(any("再跑一次" in line for line in app.logs), "要告诉用户怎么判断")
 
     def test_hard_limit_is_respected(self) -> None:
         """进度一直涨也不能无限跑：硬上限兜住。"""
