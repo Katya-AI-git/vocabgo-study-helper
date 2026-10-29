@@ -412,6 +412,18 @@ class LlmHelperTest(unittest.TestCase):
                 "复数所有格 times' 应保持为一个选项",
             )
 
+        whitespace_topic = {
+            "topic_mode": 32,
+            "stem": {"content": "_  _  _", "remark": "绕太阳旋转"},
+            "options": [{"content": "orbit"}, {"content": "the"}, {"content": "sun　"}],
+        }
+        with patch.object(LlmHelper, "_chat", return_value="orbit the sun"):
+            self.assertEqual(
+                helper.ask_phrase(whitespace_topic, {}, votes=3),
+                "orbit,the,sun　",
+                "选项中的全角空白应保留在最终答案里",
+            )
+
     def test_ask_fill_uses_final_english_line_and_majority(self) -> None:
         helper = LlmHelper(url="https://x", key="k", model="m", logger=lambda _m: None)
         topic = {

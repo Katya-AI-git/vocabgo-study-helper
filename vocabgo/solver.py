@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from . import templates
 from .bank import Bank
 from .client import VocabgoClient, join_phrase
 from .llm import LlmHelper
@@ -54,10 +55,16 @@ from .matcher import (
 
 WRONG_SENTINEL = ""  # 试答案用的「明显错误」作答
 
+# 单题出错后的自愈预算。
+# 之前是「出错就整场退出」，代价太大：测试任务只有一次机会，网络抖一下就废了。
+MAX_TOPIC_RETRIES = 2  # 同一题原地重试几次
+MAX_RESYNCS = 3        # 重试还不行，就重新 StartAnswer 要一次进度接着答，最多几次
+
 # 日志里标注「这题靠什么答出来的」——界面上全部用中文
 SOURCE_LABELS = {
     "cache": "题库",
     "match": "规则",
+    "template": "题型模板",
     "glossary": "词库",
     "materials": "本地资料",
     "probe": "试答案",
@@ -65,6 +72,10 @@ SOURCE_LABELS = {
     "guess": "猜测",
     "ocr": "读图",
     "fixed": "服务端纠错",
+    "spell": "补全拼写",
+    "fill": "补全单词",
+    "sentence": "补全句子",
+    "mean": "看义选词",
 }
 SOURCE_CN = {key: f"[{value}]" for key, value in SOURCE_LABELS.items()}
 
@@ -81,6 +92,7 @@ class Stats:
     done: int = 0
     cache: int = 0
     match: int = 0
+    template: int = 0  # 结构性题型（补全单词 / 拼写 / 补全句子 / 看义选词）命中
     glossary: int = 0  # 在线词典 / 本地词库命中
     materials: int = 0  # 用户导入的词表、教材或电子书命中
     probe: int = 0
@@ -103,6 +115,10 @@ class Stats:
             f"进度 {self.done}/{self.total}",
             f"题库 {self.cache}",
             f"规则 {self.match}",
+        ]
+        if self.template:
+            parts.append(f"题型模板 {self.template}")
+        parts += [
             f"词库 {self.glossary}",
             f"本地资料 {self.materials}",
             f"试答案 {self.probe}",
@@ -202,6 +218,8 @@ class Solver:
         )
 
         guard = 0
+        topic_retries = 0
+        resyncs = 0
         while topic:
             if self.cancel is not None and self.cancel.is_set():
                 self.stats.cancelled = True
@@ -238,11 +256,49 @@ class Solver:
                     )
                     self.bank.flush()
                     return self.stats
+
+                # ↓↓ 关键：单题出错不再整场退出 ↓↓
+                # 之前的写法是「本题异常，跳过 → return」，于是网络抖一下 / 服务端灰度换了
+                # jv 混淆方案 / 某道题提交被拒，整场答题会话当场收工 ——
+                # 用户看到的就是「测试任务刷到一半突然结束」，而且一次机会已经用掉。
+                # 现在改成：同一题先重试，重试仍不行就重新 StartAnswer 向服务端要当前进度，
+                # 接着往下答；只有「怎么都拿不到题」才算真的结束。
                 self.stats.errors += 1
-                self.log(f"  ⚠️ 本题异常，跳过：{type(exc).__name__}: {exc}")
+                detail = f"{type(exc).__name__}: {exc}"
+                if topic_retries < MAX_TOPIC_RETRIES:
+                    topic_retries += 1
+                    self.log(
+                        f"  ⚠️ 本题出错，重试 {topic_retries}/{MAX_TOPIC_RETRIES}：{detail}"
+                    )
+                    self._sleep()
+                    continue
+
+                if resyncs < MAX_RESYNCS:
+                    resyncs += 1
+                    topic_retries = 0
+                    self.log(f"  🔁 该题多次失败，重新向服务端要当前进度（第 {resyncs} 次）：{detail}")
+                    self.bank.flush()
+                    try:
+                        again = self._start(task_id, release_id, course_id, list_id, task_type, grade)
+                        refreshed = VocabgoClient.pick_topic(again)
+                    except Exception as resync_exc:
+                        self.log(f"  ⛔ 续答失败：{type(resync_exc).__name__}: {resync_exc}")
+                        refreshed = None
+                    if refreshed and str(refreshed.get("topic_code") or "") != code:
+                        topic = refreshed
+                        continue
+                    if refreshed is None:
+                        self.log(f"  ⛔ 服务端已没有待答题（进度 {self.stats.done}/{self.stats.total}）")
+                    else:
+                        self.log("  ⛔ 服务端仍返回同一题，本题只能跳过")
+                    self.bank.flush()
+                    return self.stats
+
+                self.log(f"  ⛔ 本题放弃（重试与续答都用尽）：{detail}")
                 self.bank.flush()
                 return self.stats
 
+            topic_retries = 0
             next_topic = VocabgoClient.pick_topic(save)
             if not next_topic or str(next_topic.get("topic_code")) == code:
                 finish = save.get("data") or {}
@@ -321,6 +377,14 @@ class Solver:
                 self.log(f"  ✅ {stem} → {display_answer(topic, matched)} {source_label('match')}")
                 return self._submit(code, mode)
 
+        # 2.2) 结构性题型：补全单词 / 多空首字母 / 补全句子 / 看义选词
+        # 这几类题**是算得出来的**：服务端白送了前缀 w_tip 和长度 w_lens，
+        # 当前任务词表就是候选池，交叉一下答案基本唯一。
+        # 放在大模型之前 —— 算出来的答案一定在考纲内，比模型自由生成更稳。
+        by_template = self._solve_by_template(topic, mode)
+        if by_template is not None:
+            return by_template
+
         # 2.5) 用户本地资料：先由脚本查词表和教材，明确命中就完全跳过模型。
         by_materials = self._solve_by_materials(topic, mode)
         if by_materials is not None:
@@ -365,6 +429,9 @@ class Solver:
                     self.bank.put(key, accepted, display_stem(topic))
                     self.log(f"  🤖 {stem} → {display_answer(topic, accepted)} {source_label('llm')}")
                     return self._submit(code, mode)
+                if mode == 32 and self.last_fixed_candidate is not None:
+                    self.bank.put(key, self.last_fixed_candidate, display_stem(topic))
+                    self.log("  💾 已缓存服务端回吐的短语答案，下一轮优先尝试")
                 if mode == 51:
                     for form in self._fill_word_forms(guess):
                         code, form_ok, form_data = self._answer(topic, code, form)
@@ -633,6 +700,11 @@ class Solver:
             "stem": topic_stem(topic),
             "remark": topic_remark(topic),
             "vocabulary": sorted(self.vocabulary)[:200],
+            # 这两个字段是结构性题型的全部线索：补全单词靠 w_tip（前缀）+ w_lens（词长）
+            # 就能直接算出答案。以前没记，导致失败样本没法离线复现，也看不出模板为什么没命中。
+            "w_tip": topic.get("w_tip"),
+            "w_lens": topic.get("w_lens"),
+            "w_len": topic.get("w_len"),
             "options": [
                 str(option.get("content") or "")
                 for option in topic_options(topic)
@@ -729,6 +801,46 @@ class Solver:
         self.log(
             f"  📖 {display_stem(topic)} → {display_answer(topic, answer)} {source_label('glossary')}"
         )
+        return self._submit(code, mode)
+
+    def _solve_by_template(self, topic: dict[str, Any], mode: int) -> dict[str, Any] | None:
+        """结构性题型：用前缀 + 词长 + 任务词表把答案算出来。
+
+        覆盖四类以前只能靠大模型猜的题：
+          mode 73     多空首字母（提交 JSON 数组）
+          mode 51~54  补全单词（w_tip 前缀 + w_lens 长度）
+          mode 41~44  补全句子（中文备注 ↔ 释义重叠）
+          mode 17/18  看义选词（题干是中文，选项是英文）
+
+        算不出来就返回 None，交给后面的模型/试答案 —— 不硬猜。
+        """
+        if mode == templates.SPELLING_MODE:
+            answer = templates.solve_spelling(topic, self.vocabulary)
+            source = "spell"
+        elif mode in templates.FILL_MODES:
+            answer = templates.solve_fill_word(topic, self.vocabulary)
+            source = "fill"
+        elif mode in templates.SENTENCE_MODES:
+            answer = templates.solve_sentence_choice(topic, self.word_defs)
+            source = "sentence"
+        elif mode in templates.MEAN_TO_WORD_MODES:
+            answer = templates.solve_mean_to_word(topic, self.word_defs)
+            source = "mean"
+        else:
+            return None
+
+        if answer is None or answer == "" or answer == "[]":
+            return None
+
+        code = str(topic.get("topic_code") or "")
+        code, ok, _ = self._answer(topic, code, answer)
+        if not ok:
+            return None
+        accepted = self.last_accepted_answer
+        self.stats.template += 1
+        self.stats.hit(source)
+        self.bank.put(topic_key(topic), accepted, display_stem(topic))
+        self.log(f"  🧩 {display_stem(topic)} → {display_answer(topic, accepted)} {source_label('template')}")
         return self._submit(code, mode)
 
     def _solve_by_materials(self, topic: dict[str, Any], mode: int) -> dict[str, Any] | None:
@@ -918,11 +1030,19 @@ class Solver:
         if corrects:
             candidates: list[Any] = []
             for correct in corrects:
+                exact_phrase = (
+                    LlmHelper._parse_phrase(str(correct), topic)
+                    if topic_mode(topic) == 32
+                    else None
+                )
                 for fixed in (
                     correct,
                     str(correct).strip(),
                     self._normalize(topic, correct),
+                    exact_phrase,
                 ):
+                    if fixed is None:
+                        continue
                     if fixed not in candidates:
                         candidates.append(fixed)
             if candidates:
@@ -956,10 +1076,19 @@ class Solver:
     def _normalize(self, topic: dict[str, Any], answer: Any) -> Any:
         """组词题的答案要变成 "in,many,instances" 这种逗号串。"""
         if topic_mode(topic) == 32 and isinstance(answer, str) and not answer.isdigit():
+            if "," in answer:
+                return answer.strip(" \t\r\n")
             return join_phrase(answer)
         return answer
 
     def _default_answer(self, topic: dict[str, Any]) -> Any:
+        mode = topic_mode(topic)
+        # 结构性题型即使算不出答案，也要提交**格式正确**的内容：
+        # 多空首字母题必须给等长 JSON 数组，格式错是必然零分。
+        shaped = templates.default_answer(topic)
+        if shaped not in (None, "", "[]"):
+            if mode == templates.SPELLING_MODE or mode in templates.SENTENCE_MODES:
+                return shaped
         if not topic_options(topic):
             return ""
         if topic_mode(topic) == 32:

@@ -373,16 +373,10 @@ class LlmHelper:
     def _parse_phrase(text: str, topic: dict[str, Any]) -> str | None:
         """短语必须严格使用题目选项，并与空格组数一致。"""
         options = topic_options(topic)
-        pool = {
-            str(option.get("content") or "").strip().lower()
-            for option in options
-            if str(option.get("content") or "").strip()
-        }
-        if not pool:
-            return None
+        raw_pool: dict[str, str] = {}
 
         def canonical_phrase_key(value: str) -> str:
-            key = str(value or "").strip(".,!?;:").lower().replace("’", "'")
+            key = str(value or "").strip().strip(".,!?;:").lower().replace("’", "'")
             return {
                 "somebody": "sb",
                 "someone": "sb",
@@ -396,10 +390,13 @@ class LlmHelper:
                 "something's": "sth_poss",
             }.get(key, key)
 
-        pool_by_key: dict[str, str] = {}
-        for item in pool:
-            key = canonical_phrase_key(item)
-            pool_by_key.setdefault(key, item)
+        for option in options:
+            raw = str(option.get("content") or "").strip(" \t\r\n")
+            if raw:
+                raw_pool.setdefault(canonical_phrase_key(raw), raw)
+        if not raw_pool:
+            return None
+
         stem = topic_stem(topic)
         slots = len(re.findall(r"_+", stem))
         raw_tokens = [
@@ -419,8 +416,8 @@ class LlmHelper:
             if key.endswith("s"):
                 variants.append(key[:-1])
             for variant in variants:
-                if variant in pool_by_key:
-                    return pool_by_key[variant]
+                if variant in raw_pool:
+                    return raw_pool[variant]
             return None
 
         tokens = [pool_token(token) for token in raw_tokens]
@@ -431,8 +428,8 @@ class LlmHelper:
         # 模型常漏掉冠词。空位数只差一个时，按首词读音补 a/an。
         if slots and len(normalized) == slots - 1:
             article = "an" if normalized[0][0] in "aeiou" else "a"
-            if article in pool:
-                normalized.insert(0, article)
+            if article in raw_pool:
+                normalized.insert(0, raw_pool[article])
         if slots and len(normalized) != slots:
             return None
         return ",".join(normalized)

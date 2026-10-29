@@ -69,6 +69,25 @@ class _FormClient:
         return {"data": {"topic_code": code}}
 
 
+class _LockedPhraseClient:
+    def __init__(self) -> None:
+        self.verified: list[str] = []
+
+    def verify(self, code, answer):
+        self.verified.append(str(answer))
+        return {
+            "data": {
+                "answer_result": 2,
+                "over_status": 1,
+                "answer_corrects": ["orbit the sun　"],
+                "topic_code": code,
+            }
+        }
+
+    def submit(self, code, spent):
+        return {"data": {"topic_code": code}}
+
+
 class _FakeLlm:
     enabled = True
     auth_failed = False
@@ -297,6 +316,38 @@ class FillOptimizationTest(unittest.TestCase):
         solver._solve_one(topic)  # noqa: SLF001
 
         self.assertEqual(client.verified, ["convention", "conventions"])
+
+    def test_locked_phrase_corrects_are_cached_for_next_round(self) -> None:
+        class FakeLlm:
+            enabled = True
+            auth_failed = False
+
+            def ask_phrase(self, *_args, **_kwargs):
+                return "orbit,the,sun"
+
+            def ask_choice(self, *_args, **_kwargs):
+                raise AssertionError("mode 32 不应调用选择题模型")
+
+        folder = Path(tempfile.mkdtemp())
+        bank = Bank(folder / "bank.json")
+        solver = Solver(
+            _LockedPhraseClient(),  # type: ignore[arg-type]
+            bank,
+            llm=FakeLlm(),  # type: ignore[arg-type]
+            probe=False,
+            logger=lambda _message: None,
+        )
+        topic = {
+            "topic_mode": 32,
+            "stem": {"content": "_  _  _", "remark": "绕太阳旋转"},
+            "options": [{"content": "orbit"}, {"content": "the"}, {"content": "sun　"}],
+        }
+
+        solver._solve_one(topic)  # noqa: SLF001
+
+        hits = bank.find_loose("32::norm::_ _ _::绕太阳旋转")
+        self.assertTrue(hits)
+        self.assertEqual(hits[0][1], "orbit the sun　")
 
 
 if __name__ == "__main__":

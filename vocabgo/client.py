@@ -76,6 +76,21 @@ class VocabgoError(RuntimeError):
         self.resp = resp or {}
 
 
+class VocabgoDecodeError(VocabgoError):
+    """响应解不开（jv 混淆方案不认识 / base64 坏了）。
+
+    单独一类，是因为它和「令牌失效」「任务已结束」完全不同：
+    它只是这一条响应读不出来，**换一次请求大概率就好了**（服务端灰度会轮换 jv 方案）。
+    上层应当把这种错当成「这一题跳过去」，绝不该当成「整个任务结束」。
+    """
+
+
+# 可以安全重试的异常：网络抖动、网关临时故障、响应体截断。
+# 下面这些一律重试，因为词达人的接口是幂等读 / 服务端自己维持作答状态。
+RETRY_TIMES = 3
+RETRY_BACKOFF = 0.8  # 秒；第 n 次重试等 n * RETRY_BACKOFF
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -159,6 +174,30 @@ class VocabgoClient:
 
     # ── 底层请求 ──
     def _request(self, method: str, url: str, *, params=None, body=None) -> dict[str, Any]:
+        """发一次请求；只有**瞬时故障**才重试，业务错误码原样抛出去。
+
+        为什么要重试：刷测试任务时最容易被两类偶发错误打断 ——
+          ① 网络抖动 / 网关 502 / 响应体被截断 → requests 抛 ConnectionError、JSON 解不开；
+          ② 服务端灰度换 jv 混淆方案 → data 解不出来（VocabgoDecodeError）。
+        这两类都是「这一条读不出来」，不是「任务已经结束」。之前它们会一路冒到
+        solver 里被当成致命错，整场答题会话立刻收工，表现就是「刷一半任务就结束」。
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, RETRY_TIMES + 1):
+            try:
+                return self._attempt(method, url, params=params, body=body)
+            except VocabgoDecodeError as exc:
+                last_exc = exc
+            except requests.RequestException as exc:
+                last_exc = exc
+            if attempt >= RETRY_TIMES:
+                break
+            time.sleep(RETRY_BACKOFF * attempt)
+        if isinstance(last_exc, VocabgoDecodeError):
+            raise last_exc
+        raise VocabgoError(net.friendly_error(last_exc or RuntimeError("unknown"), url)) from last_exc
+
+    def _attempt(self, method: str, url: str, *, params=None, body=None) -> dict[str, Any]:
         if method == "GET":
             params = {**(params or {}), "timestamp": now_ms(), "version": self.version, "app_type": 1}
         else:
@@ -166,26 +205,28 @@ class VocabgoClient:
             payload["sign"] = sign(payload)
             payload["app_type"] = 1
 
-        try:
-            if method == "GET":
-                response = self.session.get(url, params=params, timeout=self.timeout)
-            else:
-                response = self.session.post(url, json=payload, timeout=self.timeout)
-        except requests.RequestException as exc:
-            # 网络层问题（代理没开、断网、超时）翻译成人话，别丢一串英文给用户
-            raise VocabgoError(net.friendly_error(exc, url)) from exc
+        if method == "GET":
+            response = self.session.get(url, params=params, timeout=self.timeout)
+        else:
+            response = self.session.post(url, json=payload, timeout=self.timeout)
 
         if self.debug:
             print(f"-> {method} {url} {params if method == 'GET' else body}")
         try:
             data = response.json()
         except ValueError as exc:
-            raise VocabgoError(
+            raise VocabgoDecodeError(
                 net.friendly_error(exc, url) + f"\n   HTTP {response.status_code}，返回内容：{response.text[:160]}"
             ) from exc
         if self.debug:
             print(f"<- {response.status_code} {data}")
         data = unwrap(data)
+        # 解不开：jv 方案不认识 / base64 截断。这一条作废，但不代表任务作废。
+        if isinstance(data, dict) and data.get("_decode_error"):
+            raise VocabgoDecodeError(
+                f"响应解码失败（jv={data.get('jv')!r}）：{data['_decode_error']}",
+                data,
+            )
         if data.get("code") not in (1, None):
             self._last_code = data.get("code")
             message = f"接口报错 code={data.get('code')} msg={data.get('msg') or data.get('message')}"

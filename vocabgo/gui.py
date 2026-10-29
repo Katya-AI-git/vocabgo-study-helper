@@ -77,6 +77,10 @@ from .vision import (
 
 APP_TITLE = "词达人自动答题工具"
 
+# 测试任务只有一次机会，中途停下等于白刷。所以内部答题会话的上限是**可涨的**：
+# 只要服务端还在往下出题（进度在涨），就一直放宽，最多放宽到这个硬上限。
+TEST_SESSION_HARD_LIMIT = 40
+
 
 class VocabgoApp:
     def __init__(self, root: tk.Tk) -> None:
@@ -1693,10 +1697,15 @@ class VocabgoApp:
         try:
             initial_info = client.task_info(task_id, release_id).get("data") or {}
             initial_reset = allow_reset and int(initial_info.get("exist_little_task") or 1) == 2
+            current_little_task = int(initial_info.get("exist_little_task") or 0)
         except Exception:
             initial_reset = False
+            current_little_task = 0
         session_limit = max(1, int(session_limit or 1))
-        for session in range(1, session_limit + 1):
+        is_test_task = class_task_kind(chosen) == "test"
+        session = 1
+        # 用 while 而不是 range：测试任务的上限需要在中途动态放宽（见下面的 improved 分支）
+        while session <= session_limit:
             if self.cancel.is_set():
                 break
             if session > 1:
@@ -1719,11 +1728,14 @@ class VocabgoApp:
             )
             reset_now = session == 1 and initial_reset
             try:
-                client.submit_chose_word(
-                    task_id,
-                    word_map,
-                    reset_chose_words=reset_now,
-                )
+                if is_test_task and current_little_task == 1:
+                    self.log("📚 检测到未完成小节，继续当前题目，不重新提交选词")
+                else:
+                    client.submit_chose_word(
+                        task_id,
+                        word_map,
+                        reset_chose_words=reset_now,
+                    )
             except VocabgoError as exc:
                 if (
                     not reset_now and "存在小节任务未完成" in str(exc)
@@ -1737,24 +1749,83 @@ class VocabgoApp:
                 else:
                     raise
             solver.kind = "class"
-            stats = solver.run(task_id=task_id, release_id=release_id)
+            try:
+                stats = solver.run(task_id=task_id, release_id=release_id)
+            except VocabgoError as exc:
+                text = str(exc)
+                if is_test_task and (
+                    "20004" in text
+                    or "任务已完成" in text
+                    or "20006" in text
+                    or "任务已截止" in text
+                ):
+                    self.log(f"✅ 测试任务已由服务端结束：{text}")
+                    break
+                if (
+                    is_test_task
+                    and current_little_task == 1
+                    and ("20001" in text or "需要选词" in text)
+                ):
+                    self.log("📚 当前小节已结束，下一轮重新提交选词")
+                    current_little_task = 0
+                    continue
+                raise
             if stats.cancelled:
                 break
             try:
                 info = client.task_info(task_id, release_id).get("data") or {}
                 progress = int(info.get("progress") or 0)
-            except Exception:
-                progress = 0
+                current_little_task = int(info.get("exist_little_task") or 0)
+            except Exception as exc:
+                # 读进度失败不等于「进度归零」。以前这里回落成 0，
+                # 于是测试任务被误判成「没进展」，白丢一次机会。
+                progress = last_progress
+                self.log(f"⚠️ 读取任务进度失败，沿用上一次的 {progress}%：{type(exc).__name__}")
             self.log(f"📈 班级任务当前进度：{progress}%")
             if progress >= 100:
+                self.log("🏁 任务进度已到 100%，收工")
                 break
-            if progress <= last_progress:
-                self.log("⏹️ 本次会话没有提升总进度，停止自动续答，避免重复从头循环")
-                break
+
+            improved = progress > last_progress
             last_progress = progress
+
+            if not is_test_task:
+                if not improved:
+                    self.log("⏹️ 本次会话没有提升总进度，停止自动续答，避免重复从头循环")
+                    break
+            elif improved and session < TEST_SESSION_HARD_LIMIT:
+                # 测试任务的成绩按「整场」算，中途停掉等于白刷一次机会。
+                # 进度还在涨就说明服务端还在往下出题 —— 把会话上限跟着放宽，接着答。
+                if session >= session_limit:
+                    session_limit = session + 1
+                    self.log(
+                        f"🔄 测试任务进度仍在增长（{progress}%），把内部会话上限放宽到 {session_limit}"
+                    )
+
             if session < session_limit:
-                self.log("🔄 任务尚未完成，自动重新选词并继续")
+                if is_test_task:
+                    self.log("🔄 测试任务尚未完成，继续下一个内部答题会话")
+                else:
+                    self.log("🔄 任务尚未完成，自动重新选词并继续")
+                session += 1
                 time.sleep(1.0)
+                continue
+            if is_test_task:
+                self.log(
+                    f"⚠️ 测试任务没刷到 100%（停在 {progress}%），内部会话已到上限 {session_limit}。"
+                )
+                self.log(
+                    "   这说明服务端中途不再往下出题 —— 常见原因是该小节已答完但进度没结算、"
+                    "或在别的设备上打开过这个词达人账号。"
+                )
+                self.log("   可再次开始：程序会从当前进度接着答，不会从头重来。")
+            break
+        else:
+            if is_test_task:
+                self.log(
+                    f"⚠️ 测试任务内部会话达到硬上限 {TEST_SESSION_HARD_LIMIT} 仍未完成（{last_progress}%）。"
+                )
+                self.log("   可检查网络后再次开始，程序会从当前进度接着答。")
         try:
             signin = client.signin().get("data") or {}
             if signin:

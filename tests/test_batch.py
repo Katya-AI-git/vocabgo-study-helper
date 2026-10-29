@@ -208,6 +208,8 @@ class BatchOrchestrationTest(unittest.TestCase):
             def __init__(self):
                 self.submits = 0
                 self.reset_flags = []
+                self.reset_flags = []
+                self.reset_flags = []
 
             def chose_word_list(self, _task_id):
                 return {
@@ -375,6 +377,245 @@ class BatchOrchestrationTest(unittest.TestCase):
 
         self.assertEqual(limits, [6], "测试任务只有一次机会，仍应允许完成整套题的 6 个内部会话")
 
+    def test_test_task_continues_when_progress_is_unchanged(self) -> None:
+        class FakeClient:
+            def __init__(self):
+                self.submits = 0
+                self.reset_flags = []
+
+            def chose_word_list(self, _task_id):
+                return {
+                    "data": {
+                        "word_list": [
+                            {
+                                "word": "orbit",
+                                "score": 6.6,
+                                "course_id": "CET4_v2",
+                                "list_id": "CET4_v2_23",
+                            }
+                        ]
+                    }
+                }
+
+            def submit_chose_word(self, _task_id, _word_map, **_kwargs):
+                self.submits += 1
+                self.reset_flags.append(bool(_kwargs.get("reset_chose_words")))
+                return {"data": {}}
+
+            def task_info(self, _task_id, _release_id):
+                return {"data": {"progress": 66, "exist_little_task": 2}}
+
+            def signin(self):
+                return {"data": {}}
+
+        class FakeSolver:
+            kind = "class"
+
+            def __init__(self):
+                self.runs = 0
+
+            def run(self, **_kwargs):
+                self.runs += 1
+                return SimpleNamespace(cancelled=False)
+
+        class FakeBank:
+            def __len__(self):
+                return 0
+
+            def cover_count(self, _names):
+                return 0
+
+        app = object.__new__(VocabgoApp)
+        app.cancel = threading.Event()
+        app.log = lambda _message: None
+        app.ui = lambda *_args, **_kwargs: None
+        app.progress = SimpleNamespace(configure=lambda **_kwargs: None)
+        client = FakeClient()
+        solver = FakeSolver()
+        chosen = {
+            "task_id": 1,
+            "release_id": 2,
+            "task_name": "测试任务",
+            "task_type": 2,
+            "progress": 66,
+        }
+        with patch("vocabgo.gui.time.sleep", return_value=None):
+            app._run_once(  # noqa: SLF001
+                client,
+                solver,
+                chosen,
+                "class",
+                {"study": {}},
+                10,
+                FakeBank(),
+                session_limit=3,
+            )
+
+        self.assertEqual(solver.runs, 3)
+        self.assertEqual(client.submits, 3, "测试任务进度暂不增长时也不能提前停止")
+        self.assertEqual(
+            client.reset_flags,
+            [True, False, False],
+            "测试任务后续会话不应反复重置到第一题",
+        )
+
+    def test_test_task_continues_when_words_are_submitted_in_current_section(self) -> None:
+        class FakeClient:
+            def __init__(self):
+                self.submits = 0
+                self.reset_flags = []
+
+            def chose_word_list(self, _task_id):
+                return {
+                    "data": {
+                        "word_list": [
+                            {
+                                "word": "stack",
+                                "score": 6.6,
+                                "status": 1,
+                                "course_id": "CET4_v2",
+                                "list_id": "CET4_v2_23",
+                            }
+                        ]
+                    }
+                }
+
+            def submit_chose_word(self, _task_id, _word_map, **kwargs):
+                self.submits += 1
+                self.reset_flags.append(bool(kwargs.get("reset_chose_words")))
+                return {"data": {}}
+
+            def task_info(self, _task_id, _release_id):
+                return {"data": {"progress": 66, "exist_little_task": 1}}
+
+            def signin(self):
+                return {"data": {}}
+
+        class FakeSolver:
+            kind = "class"
+
+            def __init__(self):
+                self.runs = 0
+
+            def run(self, **_kwargs):
+                self.runs += 1
+                return SimpleNamespace(cancelled=False)
+
+        class FakeBank:
+            def __len__(self):
+                return 0
+
+            def cover_count(self, _names):
+                return 0
+
+        app = object.__new__(VocabgoApp)
+        app.cancel = threading.Event()
+        app.log = lambda _message: None
+        app.ui = lambda *_args, **_kwargs: None
+        app.progress = SimpleNamespace(configure=lambda **_kwargs: None)
+        client = FakeClient()
+        solver = FakeSolver()
+        chosen = {
+            "task_id": 1,
+            "release_id": 2,
+            "task_name": "测试任务",
+            "task_type": 2,
+            "progress": 66,
+        }
+        with patch("vocabgo.gui.time.sleep", return_value=None):
+            app._run_once(  # noqa: SLF001
+                client,
+                solver,
+                chosen,
+                "class",
+                {"study": {}},
+                10,
+                FakeBank(),
+                session_limit=3,
+            )
+
+        self.assertEqual(solver.runs, 3)
+        self.assertEqual(client.submits, 0, "未完成小节应直接续答，不能重新选词回到第一题")
+
+    def test_test_task_selects_words_after_current_section_ends(self) -> None:
+        class FakeClient:
+            def __init__(self):
+                self.submits = 0
+                self.info_calls = 0
+
+            def chose_word_list(self, _task_id):
+                return {
+                    "data": {
+                        "word_list": [
+                            {
+                                "word": "stack",
+                                "score": 6.6,
+                                "status": 1,
+                                "course_id": "CET4_v2",
+                                "list_id": "CET4_v2_23",
+                            }
+                        ]
+                    }
+                }
+
+            def submit_chose_word(self, *_args, **_kwargs):
+                self.submits += 1
+                return {"data": {}}
+
+            def task_info(self, _task_id, _release_id):
+                self.info_calls += 1
+                little_task = 1 if self.info_calls == 1 else 2
+                return {"data": {"progress": 66, "exist_little_task": little_task}}
+
+            def signin(self):
+                return {"data": {}}
+
+        class FakeSolver:
+            kind = "class"
+
+            def __init__(self):
+                self.runs = 0
+
+            def run(self, **_kwargs):
+                self.runs += 1
+                return SimpleNamespace(cancelled=False)
+
+        class FakeBank:
+            def __len__(self):
+                return 0
+
+            def cover_count(self, _names):
+                return 0
+
+        app = object.__new__(VocabgoApp)
+        app.cancel = threading.Event()
+        app.log = lambda _message: None
+        app.ui = lambda *_args, **_kwargs: None
+        app.progress = SimpleNamespace(configure=lambda **_kwargs: None)
+        client = FakeClient()
+        solver = FakeSolver()
+        chosen = {
+            "task_id": 1,
+            "release_id": 2,
+            "task_name": "测试任务",
+            "task_type": 2,
+            "progress": 66,
+        }
+        with patch("vocabgo.gui.time.sleep", return_value=None):
+            app._run_once(  # noqa: SLF001
+                client,
+                solver,
+                chosen,
+                "class",
+                {"study": {}},
+                10,
+                FakeBank(),
+                session_limit=2,
+            )
+
+        self.assertEqual(solver.runs, 2)
+        self.assertEqual(client.submits, 1, "当前小节结束后应提交选词进入下一阶段")
+
     def test_class_task_retries_with_reset_on_little_task_error(self) -> None:
         class FakeClient:
             def __init__(self):
@@ -407,7 +648,7 @@ class BatchOrchestrationTest(unittest.TestCase):
                 return {
                     "data": {
                         "progress": 100 if self.submits >= 2 else 87,
-                        "exist_little_task": 1,
+                        "exist_little_task": 0 if self.submits == 0 else 1,
                         "task_type": 2,
                     }
                 }

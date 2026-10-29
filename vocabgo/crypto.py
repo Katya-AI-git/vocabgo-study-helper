@@ -107,6 +107,66 @@ def _b64decode(text: str) -> str:
     return base64.b64decode(raw).decode("utf-8")
 
 
+def _looks_like_json(text: str) -> bool:
+    value = text.strip()
+    return bool(value) and value[0] in "{[\""
+
+
+def _salvage_b64(data: str) -> Any | None:
+    """未知 jv 的抢救式解码。
+
+    服务端会灰度上新混淆方案（社区实测 2_1254 / 2_10234 / 3_1021 都轮换出现过）。
+    没登记的方案如果直接放弃，上层就只能把这道题丢掉，测试任务于是「刷到一半停住」。
+
+    这里换三条路试，命中一条就够：
+      1. 原串直接当 base64（方案可能只是加了填充/空白）；
+      2. 从每个偏移截断后再解（方案可能只是开头/中间插了几个字符）；
+      3. 先按已登记规则的删除位反向补字符，再解。
+    解出来必须是 JSON（以 { [ " 开头），否则算没救活，交给上层重试。
+    """
+    raw = re.sub(r"\s+", "", str(data or "").strip())
+    if not raw:
+        return None
+
+    def try_decode(text: str) -> Any | None:
+        if len(text) < 8:
+            return None
+        try:
+            plain = _b64decode(text)
+        except Exception:
+            return None
+        if not _looks_like_json(plain):
+            return None
+        try:
+            return json.loads(plain)
+        except Exception:
+            return None
+
+    hit = try_decode(raw)
+    if hit is not None:
+        return hit
+
+    # 偏移截断：混淆通常只在头部插字符，偏移量不会很大
+    for offset in range(1, min(len(raw), 64)):
+        hit = try_decode(raw[offset:])
+        if hit is not None:
+            return hit
+
+    # 按已知方案的删除位反向补回去再解（新方案的删除位往往和旧方案接近）
+    for rules in JV_RULES.values():
+        uc = rules if isinstance(rules, list) else rules.get("uc") or []
+        if not uc:
+            continue
+        try:
+            patched = _obfuscate(raw, uc)
+        except Exception:
+            continue
+        hit = try_decode(patched)
+        if hit is not None:
+            return hit
+    return None
+
+
 def decode_jv(data: str, jv: str) -> Any:
     """把 jv 混淆过的 base64 载荷解成 Python 对象。"""
     if jv == "1":
@@ -114,11 +174,15 @@ def decode_jv(data: str, jv: str) -> Any:
 
     rule = JV_RULES.get(jv)
     if rule is None:
-        # 未登记的新混淆方案：先按纯 base64 试着解，失败就把原文丢回去
+        # 未登记的新混淆方案：先按纯 base64 试着解，再上抢救式解码，最后才把原文丢回去
         try:
             return json.loads(_b64decode(data))
         except Exception:
-            return data
+            pass
+        salvaged = _salvage_b64(data)
+        if salvaged is not None:
+            return salvaged
+        return data
 
     if isinstance(rule, list):
         return json.loads(_b64decode(_deobfuscate(data, rule)))
@@ -171,7 +235,13 @@ def unwrap(resp: dict[str, Any]) -> dict[str, Any]:
     if not jv or jv == "0" or not isinstance(data, str):
         return resp
     try:
-        resp["data"] = decode_jv(data, jv)
+        decoded = decode_jv(data, jv)
     except Exception as exc:  # 解不开时保留原文，便于排查
         resp["_decode_error"] = f"{type(exc).__name__}: {exc}"
+        return resp
+    resp["data"] = decoded
+    # 抢救也失败时 decode_jv 会把原串退回：这不是合法的业务数据，
+    # 必须显式标成解码失败，否则上层会把「读不出来」误判成「任务已结束」。
+    if isinstance(decoded, str) and decoded == data:
+        resp["_decode_error"] = f"未知的 jv 混淆方案：{jv}"
     return resp
