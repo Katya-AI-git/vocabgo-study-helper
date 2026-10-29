@@ -1,0 +1,44 @@
+# 换行符规则 —— 这个文件是必需的，别删
+#
+# 为什么需要它（真实故障，用户实测踩过）：
+#   仓库里若没有这个文件，`.bat` 的换行取决于「提交时那台机器的 git 配置」。
+#   作者本机 core.autocrlf=true 时，提交进仓库的是 LF；而 GitHub 的
+#   「Download ZIP」是在 Linux 服务器上生成归档的，原生换行也是 LF ——
+#   于是用户拿到的 .bat 是 LF 换行。
+#
+#   cmd.exe 解析「LF 换行 + 中文」的批处理时会把行切断，把
+#   `echo 未找到本地 Python 环境...` 的后半截当成命令去执行，
+#   表现是：双击 启动.bat 窗口闪一下、一堆乱码、程序根本起不来。
+#
+#   作者自己为什么测不出来：Git for Windows 默认 core.autocrlf=true，
+#   他 clone 下来时会被自动转成 CRLF，所以本机一切正常；
+#   而 ZIP 下载不走这套转换，直接给原始字节。
+#
+# 加上下面这几行之后，换行由属性**写死**，不再看机器配置、也不看平台：
+#   · 仓库里统一存 LF（git 的规范形式，diff 干净）
+#   · checkout 与 git archive（= GitHub ZIP）一律输出 CRLF
+# 这样无论 clone 还是 ZIP 下载，落到用户机器上都是 CRLF。
+
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# 本文件自身也用 LF，免得被 autocrlf 转换后 git 反复提示
+.gitattributes text eol=lf
+
+# Python 源码与文档统一 LF，避免跨平台 diff 噪音
+*.py    text eol=lf
+*.txt   text eol=lf
+*.md    text eol=lf
+*.html  text eol=lf
+*.json  text eol=lf
+*.spec  text eol=lf
+
+# 二进制：不做任何换行转换
+*.png   binary
+*.jpg   binary
+*.ico   binary
+*.zip   binary
+*.exe   binary
+*.pyd   binary
+*.dll   binary
