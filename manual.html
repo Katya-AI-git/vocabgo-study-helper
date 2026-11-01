@@ -10,6 +10,8 @@ body { margin:0; background:#f3f6f8; color:#1f2933; font:16px/1.75 "Microsoft Ya
 header { padding:42px 24px 28px; background:#17324d; color:#fff; }
 header h1 { margin:0 0 8px; font-size:30px; }
 header p { margin:0; color:#cfe0ee; }
+header p.feedback-lead { margin-top:14px; color:#ffd9a0; font-size:17px; font-weight:700; }
+header p.feedback-lead b { color:#fff; background:#d9480f; border-radius:4px; padding:1px 9px; letter-spacing:1px; }
 nav { margin-top:20px; display:flex; gap:10px; flex-wrap:wrap; }
 nav a { color:#fff; text-decoration:none; border:1px solid #6f91ad; border-radius:4px; padding:6px 12px; }
 main { max-width:980px; margin:28px auto 60px; padding:0 18px; }
@@ -27,9 +29,20 @@ li { margin:5px 0; }
 <header>
   <h1>词达人工具优化版 V1.0.4</h1>
   <p>用户说明已合并为一个 HTML 文件，不需要 Typora。版本变化见 <a href="版本记录.txt">版本记录.txt</a>。</p>
-  <nav><a href="#quick">快速上手</a><a href="#guide">详细使用说明</a><a href="#optimization">本地资料与优化</a><a href="#cache">缓存策略说明</a><a href="#continue">继续练习修复</a></nav>
+  <p class="feedback-lead">反馈与交流 QQ 群：<b>1130860539</b></p>
+  <nav><a href="#feedback">反馈与交流</a><a href="#quick">快速上手</a><a href="#guide">详细使用说明</a><a href="#optimization">本地资料与优化</a><a href="#cache">缓存策略说明</a><a href="#continue">继续练习修复</a></nav>
 </header>
-<main><article id="quick"><h2>快速上手</h2><p>V4 新增：</p>
+<main><article id="feedback"><h2>反馈与交流</h2>
+<p>加群：<b style="font-size:19px;color:#d9480f">1130860539</b>　（QQ 群）</p>
+<p>这个群用来做反馈和交流，不是客服，也不代刷：</p>
+<ul>
+<li><b>报错求助</b>：装不上、双击没反应、闪退、刷到一半停了、提示令牌失效 —— 到群里问，附上版本号、报错原文和日志最后 20 行。</li>
+<li><b>版本通知</b>：发新版本、服务端改题型或改签名、接口临时不可用，会先在群里说；看到「突然不能用了」先翻群消息。</li>
+<li><b>题库与词表互换</b>：自己整理的教材、词表、题库，群里可能已经有人做过一份。</li>
+<li><b>踩坑记录</b>：先翻群公告和群文件，多数问题已经有人问过、有人答过。</li>
+</ul>
+<p>进群先看群公告里的提问格式。群不接账号、不保证成绩，刷题期间的账号风险由使用者自己承担。</p>
+</article><article id="quick"><h2>快速上手</h2><p>V4 新增：</p>
 <p>1. 当前任务词表约束填空题 2. `sb./sth.` 等短语占位词归一 3. 填空题失败样本记录</p>
 <p>V1.0.3 新增：内部版本统一、GitHub 新版本检测，可选择前往更新或忽略该版本。</p>
 <p>V1.0.4 新增：图片资料 OCR 导入、批量图片 token 预警、手动检查更新、自动词形变化。</p>
