@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>词达人工具优化版 V1.0.4 使用说明</title>
+<title>词达人工具优化版 V1.0.7 使用说明</title>
 <style>
 :root { color-scheme: light; }
 body { margin:0; background:#f3f6f8; color:#1f2933; font:16px/1.75 "Microsoft YaHei","PingFang SC",sans-serif; }
@@ -27,7 +27,7 @@ li { margin:5px 0; }
 </head>
 <body>
 <header>
-  <h1>词达人工具优化版 V1.0.4</h1>
+  <h1>词达人工具优化版 V1.0.7</h1>
   <p>用户说明已合并为一个 HTML 文件，不需要 Typora。版本变化见 <a href="版本记录.txt">版本记录.txt</a>。</p>
   <p class="feedback-lead">反馈与交流 QQ 群：<b>1130860539</b></p>
   <nav><a href="#feedback">反馈与交流</a><a href="#quick">快速上手</a><a href="#guide">详细使用说明</a><a href="#optimization">本地资料与优化</a><a href="#cache">缓存策略说明</a><a href="#continue">继续练习修复</a></nav>
@@ -46,6 +46,7 @@ li { margin:5px 0; }
 <p>1. 当前任务词表约束填空题 2. `sb./sth.` 等短语占位词归一 3. 填空题失败样本记录</p>
 <p>V1.0.3 新增：内部版本统一、GitHub 新版本检测，可选择前往更新或忽略该版本。</p>
 <p>V1.0.4 新增：图片资料 OCR 导入、批量图片 token 预警、手动检查更新、自动词形变化。</p>
+<p>V1.0.7 新增：作答统一交给大模型判断，单次额度 4096 tokens（推理不足自动抬到 16384），上下文不再截断式节省；计划任务前可用「🩺 任务体检」查看真实状态。</p>
 <p>设置页可随时点击“检查更新”手动检测；启动时也会每 24 小时后台检查一次。</p>
 <p>本地资料库支持直接导入常见图片：优先自动调用本机 Tesseract；本地不可用时再使用已配置的视觉模型。</p>
 <p>图片支持多选；超过 20 张且需要回退到视觉模型时，会先提醒可能产生较多 token 消耗。</p>
@@ -55,15 +56,15 @@ li { margin:5px 0; }
 <ul>
 <li>在“设置”页点击“导入资料”。</li>
 <li>支持 TXT、MD、CSV、JSON、DOCX、EPUB 和文字型 PDF。</li>
-<li>脚本先在本地查询词表和教材，不消耗大模型 token。</li>
+<li>题目默认交给大模型作答，本地资料与词典作为提示一起送入；模型没给出稳定答案时才由脚本兜底直答。</li>
 <li>明确命中的选择题、短语题直接作答。</li>
 <li>无法确定时才把当前题目和少量相关片段交给模型。</li>
 <li>资料保存在 %LOCALAPPDATA%\VocabgoAuto\materials。</li>
 </ul>
 <p>自适应思考：</p>
 <ul>
-<li>基础词义、普通短语和填空题先关闭思考。</li>
-<li>答案为空、格式异常或多票冲突时，自动开启思考重试一次。</li>
+<li>基础词义、普通短语和填空题先按关闭思考作答，速度最快。</li>
+<li>答案为空、格式异常或多票冲突时，自动开启思考重试，推理额度最高抬到 16384 tokens。</li>
 <li>句中专词义且没有本地证据时，直接使用思考模式。</li>
 <li>设置页可关闭“按题型自动切换思考模式”。</li>
 </ul>
@@ -102,7 +103,7 @@ li { margin:5px 0; }
 <h4>自适应思考</h4>
 <ul>
 <li>默认开启“按题型自动切换思考模式”。</li>
-<li>基础词义、短语组词和普通填空先关闭思考，减少推理 token。</li>
+<li>基础词义、短语组词和普通填空先按关闭思考作答；答不稳再升级为思考模式。</li>
 <li>答案为空、格式异常或多票冲突时，自动开启思考重试一次。</li>
 <li>句中专词义且没有本地词典或资料证据时，直接使用思考模式。</li>
 <li>关闭该选项后，模型会固定使用“思考模式”下拉框里的设置。</li>

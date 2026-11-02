@@ -60,7 +60,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "prepare_rounds": 3,     # 备题刷几轮
         "class_min_coverage": 85, # 一键批量时，班级任务题库覆盖低于此值自动跳过
         "llm_votes_class": 3,    # 班级任务只考一次：每题独立询问模型 3 次并取多数
-        "llm_votes_study": 1,    # 自学任务可重练，默认只问 1 次，控制耗时和费用
+        "llm_votes_study": 3,    # 自学任务同样问 3 次取多数：作答准确优先，不按 token 省着用
         "adaptive_thinking": True, # 基础题先关思考；不稳定时再开启思考重试
         "glossary": True,        # 查词典（在线词典 + 本地词库）：不靠记忆，靠查证
         "glossary_path": "",     # 词库缓存文件，留空 = 跟题库放一起（glossary.json）

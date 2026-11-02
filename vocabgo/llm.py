@@ -251,7 +251,7 @@ class LlmHelper:
         prompt: str,
         *,
         model: str = "",
-        max_tokens: int = 512,
+        max_tokens: int = 4096,
         sample_index: int = 0,
         thinking: str | None = None,
     ) -> str | None:
@@ -288,7 +288,7 @@ class LlmHelper:
                 return text
             choice = ((body.get("choices") or [{}])[0]) or {}
             if choice.get("finish_reason") == "length" and attempt < 2:
-                token_limit = min(2048, token_limit * 2)
+                token_limit = min(16384, token_limit * 2)
                 self.log(f"    ⚠️ 推理额度用完，提升到 {token_limit} tokens 后重试")
                 continue
             if attempt < 2:
@@ -360,7 +360,7 @@ class LlmHelper:
                 break
             text = self._chat(
                 prompt,
-                max_tokens=256,
+                max_tokens=1024,
                 sample_index=sample_index,
                 thinking=thinking,
             )
@@ -373,10 +373,16 @@ class LlmHelper:
     def _parse_phrase(text: str, topic: dict[str, Any]) -> str | None:
         """短语必须严格使用题目选项，并与空格组数一致。"""
         options = topic_options(topic)
-        raw_pool: dict[str, str] = {}
+        pool = {
+            str(option.get("content") or "").strip().lower()
+            for option in options
+            if str(option.get("content") or "").strip()
+        }
+        if not pool:
+            return None
 
         def canonical_phrase_key(value: str) -> str:
-            key = str(value or "").strip().strip(".,!?;:").lower().replace("’", "'")
+            key = str(value or "").strip(".,!?;:").lower().replace("’", "'")
             return {
                 "somebody": "sb",
                 "someone": "sb",
@@ -390,13 +396,10 @@ class LlmHelper:
                 "something's": "sth_poss",
             }.get(key, key)
 
-        for option in options:
-            raw = str(option.get("content") or "").strip(" \t\r\n")
-            if raw:
-                raw_pool.setdefault(canonical_phrase_key(raw), raw)
-        if not raw_pool:
-            return None
-
+        pool_by_key: dict[str, str] = {}
+        for item in pool:
+            key = canonical_phrase_key(item)
+            pool_by_key.setdefault(key, item)
         stem = topic_stem(topic)
         slots = len(re.findall(r"_+", stem))
         raw_tokens = [
@@ -416,8 +419,8 @@ class LlmHelper:
             if key.endswith("s"):
                 variants.append(key[:-1])
             for variant in variants:
-                if variant in raw_pool:
-                    return raw_pool[variant]
+                if variant in pool_by_key:
+                    return pool_by_key[variant]
             return None
 
         tokens = [pool_token(token) for token in raw_tokens]
@@ -428,8 +431,8 @@ class LlmHelper:
         # 模型常漏掉冠词。空位数只差一个时，按首词读音补 a/an。
         if slots and len(normalized) == slots - 1:
             article = "an" if normalized[0][0] in "aeiou" else "a"
-            if article in raw_pool:
-                normalized.insert(0, raw_pool[article])
+            if article in pool:
+                normalized.insert(0, article)
         if slots and len(normalized) != slots:
             return None
         return ",".join(normalized)
@@ -455,7 +458,7 @@ class LlmHelper:
                 break
             text = self._chat(
                 prompt,
-                max_tokens=768,
+                max_tokens=2048,
                 sample_index=sample_index,
                 thinking=thinking,
             )
@@ -543,7 +546,7 @@ class LlmHelper:
                 break
             text = self._chat(
                 prompt,
-                max_tokens=512,
+                max_tokens=2048,
                 sample_index=sample_index,
                 thinking=thinking,
             )
@@ -692,13 +695,13 @@ class LlmHelper:
         if hint.strip():
             glossary += f"权威词典释义（与被考单词匹配的优先采信）: {hint.strip()}\n\n"
         if include_word_defs and word_defs:
-            lines = [f"  {w}: {'; '.join(ds)}" for w, ds in list(word_defs.items())[:40]]
+            lines = [f"  {w}: {'; '.join(ds)}" for w, ds in list(word_defs.items())[:200]]
             glossary += "已知单词释义:\n" + "\n".join(lines) + "\n\n"
         materials = ""
         if material_hint.strip():
             materials = (
                 "用户本地资料检索（只采用与本题明确相关的内容）:\n"
-                f"{material_hint.strip()[:2400]}\n\n"
+                f"{material_hint.strip()[:12000]}\n\n"
             )
 
         if mode == 32:
@@ -714,7 +717,7 @@ class LlmHelper:
                 candidates = (
                     "当前任务词表与相关候选"
                     "（词表是原形；按句子补正确词形，允许复数、时态等变化，禁止同义词）:\n"
-                    f"{fill_candidates.strip()[:2000]}\n\n"
+                    f"{fill_candidates.strip()[:8000]}\n\n"
                 )
             return (
                 f"{glossary}{materials}{candidates}"

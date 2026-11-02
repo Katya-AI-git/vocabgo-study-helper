@@ -217,32 +217,68 @@ class MaterialSolverIntegrationTest(unittest.TestCase):
             ],
         }
 
-    def test_local_material_answers_before_llm(self) -> None:
+    def test_llm_is_asked_before_local_material(self) -> None:
+        """默认作答路径是大模型：模型先问；问到答案就用模型的。
+
+        本地资料退到兜底位 —— 只在模型没给出稳定答案时才直接作答。
+        """
         folder = Path(tempfile.mkdtemp())
         material = MaterialLibrary(folder / "materials", logger=lambda _m: None)
         material.import_file(self._write(folder, "cet4.txt", "ubiquitous adj. 普遍存在的"))
 
-        class FailLlm:
+        asked: list[str] = []
+
+        class SilentLlm:
             enabled = True
             auth_failed = False
 
-            def ask_choice(self, *_args, **_kwargs):
-                raise AssertionError("资料明确命中时不应调用模型")
+            def ask_choice(self, topic, *_args, **_kwargs):
+                asked.append(str(topic.get("topic_code")))
+                return None
 
         client = self.FakeClient()
         solver = Solver(
             client,
             Bank(folder / "bank.json"),
             materials=material,
-            llm=FailLlm(),
+            llm=SilentLlm(),
             probe=False,
             logger=lambda _m: None,
         )
         solver._solve_one(self.topic())  # noqa: SLF001
 
-        self.assertEqual(client.verified, [9])
+        self.assertTrue(asked, "应当先问大模型")
+        self.assertEqual(asked[0], "c1")
+        self.assertEqual(client.verified, [9], "模型没答案时由本地资料兜底作答")
         self.assertEqual(solver.stats.materials, 1)
         self.assertEqual(solver.stats.llm, 0)
+
+    def test_llm_answer_wins_over_local_material(self) -> None:
+        """模型给出确定答案时直接采用，本地资料不再参与。"""
+        folder = Path(tempfile.mkdtemp())
+        material = MaterialLibrary(folder / "materials", logger=lambda _m: None)
+        material.import_file(self._write(folder, "cet4.txt", "ubiquitous adj. 普遍存在的"))
+
+        class AnsweringLlm:
+            enabled = True
+            auth_failed = False
+
+            def ask_choice(self, *_args, **_kwargs):
+                return 1  # 选「adj. 普遍存在的」
+
+        client = self.FakeClient()
+        solver = Solver(
+            client,
+            Bank(folder / "bank.json"),
+            materials=material,
+            llm=AnsweringLlm(),
+            probe=False,
+            logger=lambda _m: None,
+        )
+        solver._solve_one(self.topic())  # noqa: SLF001
+
+        self.assertEqual(solver.stats.llm, 1)
+        self.assertEqual(solver.stats.materials, 0)
 
     def test_unclear_material_is_sent_to_llm_as_short_hint(self) -> None:
         folder = Path(tempfile.mkdtemp())
