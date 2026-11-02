@@ -112,6 +112,11 @@ def stage_exe(out: Path) -> Path:
     if target.exists():
         shutil.rmtree(target)
     shutil.copytree(DIST, target, ignore=shutil.ignore_patterns("config.json", "bank.json", "__pycache__"))
+    # 文档跟着仓库走：不想为了改一句说明就重打 36 MB 的 exe
+    for name in ("使用说明.txt", "manual.html", "open_manual.bat", "技术说明.txt", "版本记录.txt", "config.example.json"):
+        source = ROOT / name
+        if source.exists():
+            shutil.copy2(source, target / name)
     return target
 
 
@@ -146,12 +151,21 @@ def scan(folder: Path) -> list[str]:
 
 
 def make_zip(folder: Path, archive: Path) -> Path:
+    """打包成 zip：**扁平结构**，压缩包内不再套一层同名目录。
+
+    这是「下载后直接覆盖旧版」的关键，也是沿用 v1.0.0~v1.0.6 的既有格式：
+      · 老用户升级：把 zip 里的东西全选拖进旧文件夹 → 「替换目标中的文件」，
+        同名文件逐个替换，config.json / bank.json / materials 不在包里，不会被动到。
+      · 新用户：右键「全部解压」，Windows 会以压缩包名建一个文件夹，双击即用。
+    如果包里再套一层 `vocabgo-optimized-exe/`，老用户拖进去就会变成
+    `旧文件夹/vocabgo-optimized-exe/Vocabgo.exe`，等于没覆盖 —— 所以不能套。
+    """
     if archive.exists():
         archive.unlink()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for item in sorted(folder.rglob("*")):
             if item.is_file():
-                zf.write(item, Path(folder.name) / item.relative_to(folder))
+                zf.write(item, item.relative_to(folder))
     return archive
 
 
@@ -191,6 +205,19 @@ vocabgo-optimized-source-auto-python.zip  ③ 源码版，解压后双击 启动
 3. 设置页点「一键填入推荐配置」，有 DeepSeek Key 就填上，保存。
 4. 刷题页「登录获取令牌」→ 用微信扫码 →「刷新任务」→「开始刷题」。
 5. 开刷前可以先点「🩺 任务体检」，确认这条任务还能刷。
+
+升级到新版（直接覆盖，不用重配）
+------------------------------
+
+包内是扁平结构（和 1.0.0~1.0.6 一致），所以覆盖很直接：
+
+1. 先关掉程序（别留后台，否则 exe 和 _internal 会被占用）。
+2. 打开新 zip，把里面的东西**全选**，拖进你原来的程序文件夹。
+3. 提示同名文件时选「替换目标中的文件」。
+4. 双击 Vocabgo.exe（源码版双击 启动.bat）就是新版。
+
+config.json（密钥/令牌）、bank.json（题库）、materials（教材）都不在 zip 里，
+覆盖不会删掉它们，升级后不用重新登录。
 
 数据位置：%LOCALAPPDATA%\VocabgoAuto
 

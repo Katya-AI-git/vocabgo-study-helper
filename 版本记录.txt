@@ -34,6 +34,13 @@ V1.0.7
 - 任务体检（🩺）继续保留：开刷前看进度、得分、累计用时与词分分布，
   两次对比就能判断任务是否已经停在断点处。
 
+下载与升级
+
+- 发布包的内层目录名与旧版一致（vocabgo-optimized-exe / vocabgo-optimized-source-auto-python），
+  下载后解压到旧文件夹那一层、选「全部覆盖」即可原地升级。
+- 覆盖不会删 config.json、bank.json 和 materials：升级后不用重新登录、题库继续累积。
+- 升级前请先退出程序，避免 exe 与 _internal 被占用。
+
 验证结果：
 
 - 自动化测试：240 项通过。
